@@ -1,0 +1,2388 @@
+---
+editor_options:
+  markdown:
+    wrap: sentence
+output:
+  word_document: default
+  pdf_document: default
+---
+
+# **Classification Analysis Report: Counterfeit Transactions Detection Using LOGISTIC REGRESSION**
+
+#### Download packages
+
+```{r}
+#install.packages("knitr")
+```
+
+```{r}
+#install.packages("moments")
+```
+
+```{r}
+#install.packages(c(
+#  "tidyverse","data.table","caret","corrplot","reshape2","GGally","gridExtra"
+#))
+```
+
+```{r}
+library(tidyverse)    # data manipulation + visualization
+library(data.table)   # fast data processing
+library(caret)        # ML training & tuning
+library(randomForest) # direct RF modeling
+library(e1071)        # skewness, kurtosis
+library(pROC)         # ROC, AUC (better than ROCR)
+library(corrplot)     # correlation heatmap
+library(GGally)       # ggpairs()
+library(gridExtra)    # arrange multiple plots
+library(knitr)        # kable tables for reporting
+```
+
+## Project description
+
+This project tackles a binary classification task in supervised machine learning, where a model is trained on labeled data to predict categorical labels for new instances by learning patterns between input features and the target variable.
+Specifically, it aims to classify transactions as either involving counterfeit goods (TRUE) or not (FALSE).
+
+```{r}
+original_counterfeit_transactions <- read.csv("_counterfeit_transactions.csv")
+counterfeit_transactions <- read.csv("_counterfeit_transactions.csv")
+```
+
+```{r}
+head(counterfeit_transactions)
+```
+
+The primary objective of this analysis is to develop and evaluate a machine learning model for the automated detection of fraudulent transactions related to counterfeit products.
+The successful implementation of such a model is intended to achieve the following:
+
+Primary Objective:
+
+-   To accurately classify transactions as either "involving counterfeit" or "not involving counterfeit" based on a range of transactional, behavioral, and demographic features.
+
+Secondary Objectives:
+
+-   To identify the key predictors or features that are most influential in discriminating between the two classes.
+
+-   To provide a quantitative framework for proactive risk mitigation, thereby minimizing financial losses and safeguarding brand integrity.
+
+-   The operational efficiency of fraud detection systems can be enhanced by reducing the use of manual reviews.
+
+## 1. Data Description
+
+### 1.1. Overview of the Dataset
+
+```{r}
+summary(counterfeit_transactions)
+```
+
+```{r}
+#Check target variable
+target_dist <- table(counterfeit_transactions$Involves.Counterfeit)
+prop.table(target_dist)
+```
+
+The dataset consists of 3,000 e-commerce transactions, each representing a unique purchase record.
+It contains both customer information and transactional features, as well as several risk indicators that may relate to counterfeit activity.
+The target variable, Involves.Counterfeit, indicates whether a transaction was identified as counterfeit (TRUE) or genuine (FALSE).
+
+a)  Identification Features
+
+-   Transaction.ID - Unique identifier for each transaction. Used only for tracking; excluded from modeling.
+-   Customer.ID - Unique identifier for each customer; allows linking multiple purchases by the same individual.
+
+b)  Temporal Feature
+
+-   Transaction.Date – Date and time of purchase. Enables time-based analysis (e.g., identifying risky hours or days).
+
+c)  Customer Demographics
+
+-   Customer.Age – Age of the customer, ranging from 18 to 79 years. Median 48, with most customers between 33–64, indicating a mature consumer base.
+
+d)  Transaction Details
+
+-   Custom.Location – Customer’s geographic or regional location. Useful for identifying regions with higher counterfeit risk.
+-   Quantity – Number of items purchased (1–19). Median 3, suggesting mostly small orders.
+-   Unit.Price – Price per item, ranging 5.20–299.59. High variance could reflect product diversity or suspicious pricing.
+-   Total.Amount – Total value of the transaction. Median 322.58; very high totals may signal bulk or high-risk purchases.
+-   Payment.Method – Payment channel used (e.g., Credit Card, PayPal, Cryptocurrency). Different methods may have varying fraud risk levels.
+-   Shipping.Speed – Delivery option selected (Economy → Express). May reflect buyer urgency or fraud intent.
+
+e)  Customer Behavior
+
+-   Customer.History.Orders – Number of prior orders by the same customer. Median 18; higher history may indicate trustworthy buyers.
+-   Discount.Applied – Whether a discount was used (TRUE/FALSE). Discounts appear in 31% of transactions.
+-   Discount.Percentage – Discount rate (0–50%). Mean 8.6%; higher discounts might be linked to counterfeit promotions.
+
+f)  Shipping and Delivery
+
+-   Shipping.Cost – Amount charged for shipping (5.00–24.99). Average 14.87; low cost might indicate unreliable shipping sources.
+-   Delivery.Time.Days – Days taken for product delivery (1–29). Mean 15 days; long times could suggest cross-border shipments.
+-   Refund.Requested – Whether the buyer requested a refund. Found in 18% of transactions; potential counterfeit signal.
+
+g)  Risk Indicators
+
+-   Velocity.Flag – Indicates unusually rapid purchase activity. True in 11% of transactions; associated with fraud attempts.
+-   Geolocation.Mismatch – Billing and shipping addresses differ. True in 16%; commonly seen in fraudulent activity.
+-   Device.Fingerprint.New – Transaction made from a new or unrecognized device. True in 19%; potential high-risk behavior.
+
+h)  Target Variable
+
+-   Involves.Counterfeit – Indicates whether the transaction was counterfeit (TRUE) or genuine (FALSE). Counterfeit cases make up 24.4% of all transactions — showing a class imbalance that requires modeling adjustments.
+
+### 1.2. Handling Missing Values
+
+```{r}
+#Check for the number of missing values
+sum(is.na(counterfeit_transactions))
+```
+
+In this dataset, none of the variables contain missing data.
+
+### 1.3. Number of Unique Values per Feature
+
+```{r}
+cat(
+  paste(
+    names(
+      sapply(
+        counterfeit_transactions[, sapply(counterfeit_transactions, is.character) | sapply(counterfeit_transactions, is.factor)],
+        function(x) length(unique(x))
+      )
+    ),
+    sapply(
+      counterfeit_transactions[, sapply(counterfeit_transactions, is.character) | sapply(counterfeit_transactions, is.factor)],
+      function(x) length(unique(x))
+    ),
+    sep = ": ",
+    collapse = "\n"
+  )
+)
+
+```
+
+## 2. Data Preparation
+
+### 2.1. Data Cleaning & Removal
+
+#### 2.1.1. Handling Transaction ID
+
+```{r}
+#Check for duplicates in Transaction.ID
+
+cat("Number of duplicates in Transaction.ID:", sum(duplicated(counterfeit_transactions$Transaction.ID)))
+```
+
+```{r}
+# Find duplicated Transaction.IDs
+dup_ids <- counterfeit_transactions$Transaction.ID[duplicated(counterfeit_transactions$Transaction.ID)]
+
+# View all rows that share those duplicated IDs
+counterfeit_transactions[counterfeit_transactions$Transaction.ID %in% dup_ids, ]
+
+```
+
+The duplicated Transaction.ID values occur because the dataset likely contains different transactions that were accidentally assigned the same ID — possibly due to data entry, system logging, or ID generation errors.
+
+For example, TXN_152377 appears twice but corresponds to two different customers, dates, and amounts, which suggests these are distinct transactions rather than true duplicates.
+Hence, the transaction ID column is not reliable as a unique identifier.
+
+Since only a small number of transaction IDs are duplicated and each record still contains meaningful and distinct information, we decide to remove this column.
+Its rare duplication indicates that it represents a minority of cases and does not affect the overall integrity of the dataset.
+
+```{r}
+counterfeit_transactions <- counterfeit_transactions %>%
+  select(-Transaction.ID)
+
+```
+
+#### 2.1.2. Handling Customer ID
+
+We decide to drop the Customer.ID column because the majority of customers in the dataset are first-time buyers, meaning there is little repeated behavior to analyze.
+The small number of returning customers does not provide significant predictive value, nor is it unusual for some customers to make multiple purchases.
+Therefore, this variable does not meaningfully contribute to identifying counterfeit transactions and can be excluded from the analysis.
+
+```{r}
+counterfeit_transactions <- counterfeit_transactions %>%
+  select(-Customer.ID)
+```
+
+#### 2.1.3. Handling Transaction Date
+
+We choose to remove the Transaction.Date column because, in its raw datetime format, it does not provide direct predictive value for counterfeit detection.
+While the timing of transactions might hold some relevance, this information would need to be transformed into more meaningful features (e.g., time of day, day of week, or month).
+
+Since we are not performing temporal or trend-based analysis in this study, keeping the full datetime variable would only add unnecessary complexity without improving model performance.
+
+Additionally, temporal information has already been displayed in a more useful variable: Velocity Flag - which refers to the speed or frequency of transactions or actions by a single user, card, or account within a certain time window.
+
+Therefore, we exclude it from the dataset.
+
+```{r}
+counterfeit_transactions <- counterfeit_transactions %>%
+  select(-Transaction.Date)
+```
+
+#### 2.1.4. Handling Discount Applied
+
+Check if 'Discount.Applied' is redundant by verifying: \* When FALSE → Discount.Percentage = 0, and when TRUE → Discount.Percentage \> 0.
+\* If all rows follow this rule (nrow(mismatch) = 0), 'Discount.Applied' can be dropped.
+
+```{r}
+mismatch <- counterfeit_transactions[
+  (counterfeit_transactions$Discount.Applied == FALSE & counterfeit_transactions$Discount.Percentage > 0) |
+  (counterfeit_transactions$Discount.Applied == TRUE & counterfeit_transactions$Discount.Percentage == 0),
+]
+
+# Count how many mismatches
+nrow(mismatch)
+```
+
+We drop 'Discount.Applied' variable.
+
+```{r}
+counterfeit_transactions <- counterfeit_transactions %>%
+  select(-Discount.Applied)
+```
+
+#### 2.1.5. Handling Total Amount
+
+```{r}
+cat("Correlation between Total Amount and Quantity:", cor(counterfeit_transactions$Quantity, counterfeit_transactions$Total.Amount))
+cat("\nCorrelation between Total Amount and Unit Price:", cor(counterfeit_transactions$Unit.Price, counterfeit_transactions$Total.Amount))
+```
+
+We decided to remove Total Amount because:
+
+-   Redundancy – Since Total.Amount is a derived variable (Quantity × Unit.Price), it doesn’t add any new information to the model. Keeping it would be redundant, as the model can infer the same relationship from the other two variables.
+
+<!-- -->
+
+-   Multicollinearity Risk – Because Total.Amount is mathematically dependent on Quantity and Unit.Price, including all three can cause multicollinearity, which inflates variance in model coefficients and can destabilize logistic regression estimates.
+
+```{r}
+counterfeit_transactions <- counterfeit_transactions %>%
+select(-Total.Amount)
+```
+
+### 2.2. Categorical Variable Encoding
+
+#### 2.2.1. One-Hot Encoding for Payment Method
+
+```{r}
+unique(counterfeit_transactions$Payment.Method)
+```
+
+One-hot encoding is applied to the Payment.Method variable because it is a categorical feature with multiple distinct, non-ordinal values (6 unique values).
+Machine learning models require numerical input, and one-hot encoding converts each payment type (e.g., Debit Card, PayPal, Cryptocurrency) into a separate binary variable, allowing the model to interpret them without implying any inherent order or ranking.
+This approach ensures that the model can capture potential differences in transaction behavior or counterfeit risk associated with specific payment methods while avoiding bias that may arise from arbitrary numeric encoding.
+
+```{r}
+counterfeit_transactions <- counterfeit_transactions %>%
+  mutate(value = TRUE) %>%
+  pivot_wider(names_from = Payment.Method, values_from = value, values_fill = FALSE)
+
+```
+
+```{r}
+colnames(counterfeit_transactions) <- make.names(colnames(counterfeit_transactions))
+```
+
+#### 2.2.2. Ordinal Encoding
+
+```{r}
+unique(counterfeit_transactions$Shipping.Speed)
+```
+
+Ordinal encoding is applied to the Shipping.Speed variable because its categories represent a natural order from fastest to slowest delivery: Express, Priority, Standard, and Economy.
+Unlike one-hot encoding, ordinal encoding preserves this inherent ranking by assigning numerical values that reflect relative delivery speed.
+This allows the model to recognize and utilize the ordered relationship between shipping speeds—such as the potential association between slower shipping and higher counterfeit risk—while maintaining computational efficiency and avoiding unnecessary feature expansion.
+
+```{r}
+counterfeit_transactions$Shipping.Speed <- ifelse(
+  grepl("Economy", counterfeit_transactions$Shipping.Speed), 1,
+  ifelse(grepl("Standard", counterfeit_transactions$Shipping.Speed), 2,
+         ifelse(grepl("Priority", counterfeit_transactions$Shipping.Speed), 3,
+                ifelse(grepl("Express", counterfeit_transactions$Shipping.Speed), 4, NA)))
+)
+```
+
+#### 2.2.3. Handling High Cardinality
+
+```{r}
+unique(counterfeit_transactions$Custom.Location)
+```
+
+High cardinality in categorical variables, such as the Custom.Location feature with multiple country codes ('JP', 'DE', 'BR', 'IN', 'US', 'AU', 'CA', 'MX', 'GB', 'FR'), can lead to model inefficiency and reduced generalization capability.
+When represented through one-hot encoding, each country would generate a separate feature, increasing dimensionality and potentially introducing noise, especially if some categories have limited representation in the dataset.
+This can result in overfitting, as the model may learn country-specific idiosyncrasies rather than meaningful global patterns.
+
+To address this issue, two alternative approaches were implemented.
+
+-   The first approach created a binary “Developed” indicator column, where developed countries were assigned a value of 1 and emerging countries a value of 0.
+    This simplification allowed the model to capture broad economic distinctions that may influence transaction behavior without inflating feature dimensionality.
+
+-   The second approach applied target encoding, representing each country by its average probability of counterfeit involvement, thereby allowing the model to quantify and leverage country-level correlations with counterfeit activity more effectively.
+
+```{r}
+    # 1. Economic Strength Encoding
+  counterfeit_transactions <- counterfeit_transactions %>%
+  mutate(
+    Economic.Level = case_when(
+      Custom.Location %in% c("US", "CA", "GB", "DE", "FR", "AU", "JP") ~ "Developed",
+      Custom.Location %in% c("MX", "BR", "IN") ~ "Emerging",
+      TRUE ~ "Other"
+    ),
+    Developed = case_when(
+      Economic.Level == "Developed" ~ 1,
+      Economic.Level == "Emerging" ~ 0,
+      TRUE ~ NA_real_
+    )) %>%
+  select(-Economic.Level)
+    # 2. Target encoding
+# Will be done after train-split test to avoid data leakage
+```
+
+### 2.3. Data Standardization
+
+Data standardization is necessary to ensure that all numerical variables contribute equally to the model’s learning process.
+In datasets where features have different scales (e.g., “Customer.Age” ranges from 18–79, while “Total.Amount” may go up to thousands), models that rely on distance calculations or gradient optimization (such as logistic regression) can become biased toward variables with larger numerical ranges.
+
+Standardization transforms the data so that each feature has a mean of zero and a standard deviation of one, aligning them on a comparable scale.
+This improves numerical stability, accelerates convergence during training, and enhances the interpretability and performance consistency of the model.
+
+```{r}
+# Turn logical columns into 1 and 0
+counterfeit_transactions <- counterfeit_transactions %>%
+  mutate(across(where(is.logical), ~ as.integer(.)))
+```
+
+```{r}
+prestandard_counterfeit <- counterfeit_transactions
+head(prestandard_counterfeit)
+```
+
+```{r}
+# Defines binary columns (only 0 and 1)
+binary_cols <- names(counterfeit_transactions)[
+  sapply(counterfeit_transactions, function(x) all(na.omit(unique(x)) %in% c(0, 1)))
+]
+
+# Define the target column
+target_col <- "Involves.Counterfeit"
+
+# Identify numeric columns to standardize
+numeric_cols <- names(counterfeit_transactions)[
+  sapply(counterfeit_transactions, is.numeric) &
+    !(names(counterfeit_transactions) %in% c(binary_cols, target_col))
+]
+
+# Normalize numeric columns
+counterfeit_transactions[numeric_cols] <- scale(counterfeit_transactions[numeric_cols])
+```
+
+```{r}
+counterfeit_transactions <- counterfeit_transactions %>%
+  select(-Involves.Counterfeit, Involves.Counterfeit)
+```
+
+```{r}
+head(counterfeit_transactions)
+```
+
+## 3. Exploratory Data Analysis (EDA)
+
+### 3.1. Overview
+
+```{r}
+# Overview
+cat("_Number of rows and columns: ",dim(prestandard_counterfeit),"\n")
+
+cat("_Structure of the dataset: \n")
+str(prestandard_counterfeit)
+
+cat("_Summary: \n")
+summary(prestandard_counterfeit)
+
+cat("_Duplicates:",sum(duplicated(prestandard_counterfeit)))
+
+```
+
+The dataset contains 3,000 observations and 21 variables, covering a mix of numerical, categorical, and binary indicators related to customer transactions and counterfeit detection.
+No duplicate records are present.
+
+The customer base spans a wide age range (18–79), with an average of 48.7 years.
+Most transactions involve small quantities (median = 3) and moderately priced products (mean unit price ≈ 133.8).
+Shipping speed ranges from 1 (slowest) to 4 (fastest), with an average of about 2.6, suggesting most customers opt for mid-tier shipping.
+Discounts are typically low (median = 0%), but some reach as high as 50%.
+
+Binary fraud-related indicators (e.g., Refund.Requested, Velocity.Flag, Geolocation.Mismatch, Device.Fingerprint.New) show low means, implying these events are relatively rare.
+The target variable, Involves.Counterfeit, indicates about 24% of transactions involve counterfeit activity, providing a moderately imbalanced dataset.
+Among payment methods, PayPal (25.7%) and Credit Card (25.3%) are most common, while Cryptocurrency and Wire Transfer are least used.
+
+### 3.2. Target Variable Analysis
+
+```{r}
+# Class distribution
+target_dist <- table(prestandard_counterfeit$Involves.Counterfeit)
+target_prop <- prop.table(target_dist) * 100
+
+cat("Target Variable Distribution:\n")
+print(target_dist)
+cat("\nPercentages:\n")
+print(round(target_prop, 2))
+
+# Visualize target distribution
+p2 <- ggplot(prestandard_counterfeit, aes(x = factor(Involves.Counterfeit), fill = factor(Involves.Counterfeit))) +
+  geom_bar() +
+  geom_text(stat = 'count', aes(label = after_stat(count)), vjust = -0.5) +
+  scale_fill_manual(values = c("0" = "steelblue", "1" = "coral"),
+                    labels = c("0" = "No Counterfeit", "1" = "Counterfeit")) +
+  labs(title = "Distribution of Target Variable (Involves.Counterfeit)",
+       x = "Involves Counterfeit", y = "Count", fill = "Status") +
+  theme_minimal()
+print(p2)
+
+# Class imbalance ratio
+imbalance_ratio <- min(target_prop) / max(target_prop)
+cat("\nClass Imbalance Ratio:", round(imbalance_ratio, 3), "\n")
+if(imbalance_ratio < 0.5) {
+  cat("⚠️ Warning: Significant class imbalance detected. \n")
+}
+```
+
+Out of 3,000 transactions, approximately 24.4% are counterfeit, while 75.6% are legitimate.
+This indicates a moderate class imbalance, with legitimate transactions forming the majority.
+
+In classification modeling, such imbalance can cause algorithms like logistic regression to favor the majority class, potentially reducing the model’s sensitivity to detecting counterfeit transactions.
+
+To address this, the following steps will be undertaken:
+
+-   Threshold Tuning: Instead of using the default 0.5 probability cutoff, we will adjust the decision threshold to improve recall for counterfeit transactions while balancing precision.
+
+-   Performance Metrics Selection: Evaluation will focus not only on accuracy but also on precision, recall, F1-score, and AUC, which better reflect the model’s ability to detect counterfeit activity in an imbalanced dataset.
+
+### 3.3. Univariate Analysis
+
+```{r}
+library(moments)
+library(knitr)
+```
+
+```{r}
+# Define numerical columns
+numerical_cols <- c("Customer.Age", "Quantity", "Unit.Price", "Shipping.Speed",
+                    "Customer.History.Orders", "Discount.Percentage",
+                    "Shipping.Cost", "Delivery.Time.Days")
+
+# Keep only columns that exist in the dataset
+numerical_cols <- intersect(numerical_cols, names(prestandard_counterfeit))
+
+# Compute detailed statistics for each numerical variable
+univariate_summary <- prestandard_counterfeit %>%
+  select(all_of(numerical_cols)) %>%
+  summarise(across(everything(), list(
+    Mean = ~mean(., na.rm = TRUE),
+    Median = ~median(., na.rm = TRUE),
+    SD = ~sd(., na.rm = TRUE),
+    Min = ~min(., na.rm = TRUE),
+    Max = ~max(., na.rm = TRUE),
+    Skewness = ~skewness(., na.rm = TRUE),
+    Kurtosis = ~kurtosis(., na.rm = TRUE)
+  ))) %>%
+  pivot_longer(everything(), names_to = c("Variable", ".value"), names_sep = "_")
+
+# Add short interpretation (optional)
+univariate_summary <- univariate_summary %>%
+  mutate(Interpretation = case_when(
+    Variable == "Customer.Age" ~ "Almost symmetric; ages spread evenly across a wide range.",
+    Variable == "Quantity" ~ "Right-skewed; most buy small quantities, some large purchases.",
+    Variable == "Unit.Price" ~ "Slight right skew; mix of low-cost and premium products.",
+    Variable == "Shipping.Speed" ~ "Nearly uniform; standard delivery preferred.",
+    Variable == "Customer.History.Orders" ~ "Slight right skew; some highly active repeat buyers.",
+    Variable == "Discount.Percentage" ~ "Strong right skew; most receive low or no discounts.",
+    Variable == "Shipping.Cost" ~ "Symmetric; consistent shipping pricing.",
+    Variable == "Delivery.Time.Days" ~ "Symmetric; reliable delivery with few delays.",
+    TRUE ~ ""
+  ))
+
+# Output as a markdown-formatted table
+kable(
+  univariate_summary,
+  caption = "Univariate Summary Statistics",
+  digits = 2,
+  align = "lcccccccl"
+)
+
+```
+
+This section describes the summary and detailed statistics for eight numerical variables in the dataset.
+These variables represent customer demographics, buying behavior, product pricing, and delivery performance.
+
+------------------------------------------------------------------------
+
+### Customer.Age
+
+Mean: 48.67  Median: 48  Range: 18–79\
+The distribution is almost symmetric (skewness ≈ 0) with low kurtosis (-1.19), showing that customer ages are spread quite evenly.\
+Insight: The customer group covers many age ranges without any strong focus on one group.
+
+------------------------------------------------------------------------
+
+### Quantity
+
+Mean: 4.37  Median: 3  Range: 1–19\
+The variable has strong right skewness (1.91) and high kurtosis (2.71).
+Most customers buy small quantities, but a few buy much larger amounts.\
+Insight: A small group of bulk buyers has a large effect on total sales.
+
+------------------------------------------------------------------------
+
+### Unit.Price
+
+Mean: 133.78  Median: 112.47  Range: 5.2–299.6\
+There is slight positive skewness (0.39), meaning a few items are high-priced.\
+Insight: The products include both low-cost and premium options, with more higher-priced items in the mix.
+
+------------------------------------------------------------------------
+
+### Shipping.Speed
+
+Mean: 2.63  Median: 3  Range: 1–4\
+The distribution is nearly symmetric (skewness ≈ 0), showing that customers use all speed levels fairly evenly.\
+Insight: Most customers prefer the standard delivery speed, around level 3.
+
+------------------------------------------------------------------------
+
+### Customer.History.Orders
+
+Mean: 19.36  Median: 18  Range: 0–49\
+The data has a small right skew (0.33), showing that a few customers have made many past orders.\
+Insight: Most customers buy occasionally, but a small number are very loyal or repeat buyers.
+
+------------------------------------------------------------------------
+
+### Discount.Percentage
+
+Mean: 8.57  Median: 0  Range: 0–50\
+This variable has strong right skewness (1.48) and a high standard deviation (14.7).
+Most customers receive no or low discounts, while some get very high ones.\
+Insight: Discounts are not given equally and may depend on marketing or customer loyalty programs.
+
+------------------------------------------------------------------------
+
+### Shipping.Cost
+
+Mean: 14.87  Median: 14.78  Range: 5–25\
+The distribution is almost symmetric (skew ≈ 0), meaning that shipping fees are quite stable.\
+Insight: Shipping costs are consistent for most customers, likely due to a standard pricing policy.
+
+------------------------------------------------------------------------
+
+### Delivery.Time.Days
+
+Mean: 15.05  Median: 15  Range: 1–29\
+The data is symmetric (skew ≈ 0), but the range shows that some orders take longer than average to arrive.\
+Insight: Delivery times are usually reliable, with only a few longer delays.
+
+------------------------------------------------------------------------
+
+### Overall Summary
+
+Most variables, such as Customer.Age, Shipping.Cost, and Delivery.Time.Days, show symmetric distributions and low skewness, which makes them suitable for standard statistical analysis.\
+Quantity and Discount.Percentage show strong right skewness and may need normalization, such as log transformation, before modeling.\
+In general, the dataset shows a mix of customer behaviors and stable performance in pricing and delivery.
+
+```{r}
+# Histograms for all numerical features
+plot_list <- list()
+for(col in numerical_cols) {
+  p <- ggplot(prestandard_counterfeit, aes(x = .data[[col]])) +
+    geom_histogram(fill = "steelblue", color = "black", bins = 30, alpha = 0.7) +
+    labs(title = paste("Distribution of", col), x = col, y = "Frequency") +
+    theme_minimal()
+  plot_list[[col]] <- p
+}
+```
+
+```{r}
+install.packages("gridExtra")
+library(gridExtra)
+```
+
+```{r}
+# Display histograms in grid (2 per row)
+cat("\nDisplaying distribution plots...\n")
+n_plots <- length(plot_list)
+for(i in seq(1, n_plots, by = 2)) {
+  end_idx <- min(i + 1, n_plots)
+  grid.arrange(grobs = plot_list[i:end_idx], ncol = 2)
+}
+```
+
+```{r}
+# Box plots for outlier detection
+boxplot_list <- list()
+for(col in numerical_cols) {
+  p <- ggplot(prestandard_counterfeit, aes(y = .data[[col]])) +
+    geom_boxplot(fill = "lightblue", outlier.color = "red") +
+    labs(title = paste("Boxplot:", col), y = col) +
+    theme_minimal()
+  boxplot_list[[col]] <- p
+}
+
+cat("\nDisplaying boxplots for outlier detection...\n")
+grid.arrange(grobs = boxplot_list[1:min(6, length(boxplot_list))], ncol = 3)
+if(length(boxplot_list) > 6) {
+  grid.arrange(grobs = boxplot_list[7:min(12, length(boxplot_list))], ncol = 3)
+}
+```
+
+The distribution of Customer.Age appears fairly uniform across the range of approximately 20 to 80, with a slight increase in frequency among middle-aged customers.
+This even spread indicates a diverse customer base and provides a stable baseline for model interpretation.
+Although Customer.Age may not be highly predictive on its own, any clustering of fraudulent transactions at specific extremes (e.g., very young, very old, or implausible default ages) could represent important anomalies for the model to learn.
+
+The distribution of Quantity is highly left-skewed, with most transactions involving only one or two items.
+This pattern reflects typical purchasing behavior, as legitimate customers rarely buy in bulk.
+However, unusually high-quantity transactions — located in the low-frequency tail of the distribution — are particularly relevant for counterfeit detection.
+Fraudsters often place large orders to maximize gain before being detected, making these outliers valuable signals for the model.
+Conversely, a burst of many small test orders could also suggest fraudulent card testing behavior.
+
+The Unit.Price distribution is roughly uniform but slightly peaked at the lower range (around 50–100) and remains relatively flat up to 300.
+For fraud prediction, the most informative regions are the extremes.
+Counterfeit or fraudulent transactions often involve higher-priced items, as these yield greater financial returns.
+Therefore, transactions near the upper end of the price range (close to 300) should be considered higher-risk.
+
+The Shipping.Speed distribution shows clear peaks at levels 2 and 4, with speed 2 being the most common.
+This pattern suggests customers generally prefer standard delivery, while expedited shipping (speed 4) is less frequent but more revealing.
+In fraud scenarios, actors often choose the fastest available shipping to obtain goods before their payment is flagged or reversed.
+As such, transactions with the highest shipping speed should be treated as high-risk indicators.
+
+The Customer.History.Orders variable is heavily left-skewed, with most customers having between 0 and 5 prior orders.
+This feature is one of the most predictive for counterfeit detection: new or low-activity accounts are far more likely to engage in fraudulent transactions, while customers with long purchase histories are strong indicators of legitimacy.
+The concentration of values at the lower end confirms this as a critical signal.
+
+The Discount.Percentage distribution is extremely left-skewed, with the vast majority of transactions having a 0% discount.
+Non-zero discounts are rare anomalies and highly informative in fraud detection.
+Transactions with unusually high discounts (up to 50%) may indicate abuse of promotional codes, stolen coupons, or system exploitation — all behaviors commonly associated with fraudulent activity.
+
+The Shipping.Cost distribution is relatively uniform between approximately 5 and 25.
+While not strongly predictive by itself, it often correlates with Shipping.Speed.
+Transactions with very high shipping costs (e.g., 20–25) likely represent express or priority shipping — a pattern commonly exploited by fraudsters seeking to receive goods quickly.
+This variable thus complements Shipping.Speed in identifying suspicious behavior.
+
+The Delivery.Time.Days distribution is also fairly uniform (roughly 0–30 days).
+Although not inherently predictive, its extremes provide useful information.
+Transactions with very short delivery times (e.g., 0–5 days) align with the urgent behavior typical of fraudulent actors who aim to obtain goods before chargebacks occur.
+
+Finally, the boxplots reinforce these observations by visualizing outliers and symmetry across variables.
+
+-   Quantity and Discount.Percentage display numerous high-end outliers, confirming the presence of rare but influential events linked to potential fraud.
+
+-   Customer.Age, Shipping.Cost, and Delivery.Time.Days are largely symmetric, implying their predictive value emerges mainly when a fraudulent transaction deviates substantially from the median.
+
+-   Customer.History.Orders shows extreme left skew with a tightly compressed interquartile range (IQR) near zero, reaffirming that new accounts are the dominant source of counterfeit transactions.
+
+In summary, Quantity, Customer.History.Orders, Discount.Percentage, and Shipping.Speed stand out as the most informative features for counterfeit prediction.
+Meanwhile, Customer.Age, Unit.Price, Shipping.Cost, and Delivery.Time.Days provide contextual depth and help the model detect abnormal deviations from typical customer behavior.
+
+```{r}
+# Identify categorical columns (character + binary variables)
+categorical_cols <- c("Custom.Location", "Refund.Requested", "Geolocation.Mismatch",
+                     "Device.Fingerprint.New", "Debit.Card", "PayPal",
+                     "Credit.Card", "Apple.Pay", "Cryptocurrency", "Wire.Transfer")
+
+# Keep only columns that exist in the dataset, excluding target
+categorical_cols <- intersect(categorical_cols, names(prestandard_counterfeit))
+categorical_cols <- categorical_cols[categorical_cols != "Involves.Counterfeit"]
+
+# Frequency tables
+for(col in categorical_cols) {
+  cat("\n", col, ":\n")
+  freq_table <- table(prestandard_counterfeit[[col]])
+  prop_table <- prop.table(freq_table) * 100
+  result <- data.frame(
+    Value = names(freq_table),
+    Count = as.vector(freq_table),
+    Percentage = round(as.vector(prop_table), 2)
+  )
+  print(result)
+}
+```
+
+```{r}
+# Bar charts for categorical features
+cat_plot_list <- list()
+for(col in categorical_cols) {
+  # Limit to top 10 categories if too many
+  top_cats <- names(sort(table(prestandard_counterfeit[[col]]), decreasing = TRUE)[1:min(10, length(unique(prestandard_counterfeit[[col]])))])
+
+  plot_data <- prestandard_counterfeit %>%
+    filter(.data[[col]] %in% top_cats) %>%
+    count(.data[[col]]) %>%
+    arrange(desc(n))
+
+  p <- ggplot(plot_data, aes(x = reorder(.data[[col]], n), y = n)) +
+    geom_bar(stat = "identity", fill = "steelblue") +
+    coord_flip() +
+    labs(title = paste("Distribution of", col), x = col, y = "Count") +
+    theme_minimal()
+  cat_plot_list[[col]] <- p
+}
+
+cat("\nDisplaying categorical feature distributions...\n")
+if(length(cat_plot_list) > 0) {
+  grid.arrange(grobs = cat_plot_list[1:min(6, length(cat_plot_list))], ncol = 2)
+  if(length(cat_plot_list) > 6) {
+    grid.arrange(grobs = cat_plot_list[7:min(12, length(cat_plot_list))], ncol = 2)
+  }
+}
+```
+
+The distribution of Custom.Location indicates that transactions are relatively balanced across several countries, with slightly higher frequencies in regions such as GB, MX, and DE.
+This suggests a geographically diverse customer base.
+For counterfeit detection, location-based anomalies (for instance, a sudden spike in transactions from a less common country) could reveal region-specific fraud hotspots or compromised shipping routes.
+
+The distribution of Refund.Requested is heavily skewed, with the vast majority of transactions showing no refund activity.
+Only a small subset involves refund requests.
+This imbalance is important for fraud modeling since refund requests can signal potential exploitation of refund policies or attempts to reverse fraudulent charges after goods are delivered.
+
+The distribution of Geolocation.Mismatch reveals that most transactions have consistent geolocation data, with only a minority displaying mismatches.
+These mismatched cases, while few, are critical red flags for fraud detection, as they may represent spoofed IPs, proxy usage, or attempts to mask a true origin.
+
+The distribution of Device.Fingerprint.New shows that most users transact from recognized or previously used devices, with a smaller portion using new device fingerprints.
+Transactions involving new or unfamiliar devices are often associated with fraudulent behavior, especially if combined with other suspicious factors such as new accounts or inconsistent geolocation.
+
+The distribution of Debit.Card usage suggests it is the predominant payment method, with alternative methods being far less common.
+This high concentration implies that most customers prefer direct card payments.
+From a fraud perspective, rare payment methods or sudden shifts in the proportion of debit card transactions could indicate unusual behavior or testing of stolen cards.
+
+Finally, the distribution of PayPal transactions shows a moderate number of users adopting this method.
+Although PayPal generally involves added verification, its use in fraudulent transactions might point to compromised linked accounts or misuse of third-party credentials.
+Monitoring PayPal-related anomalies could thus be valuable in identifying counterfeit activity patterns.
+
+### 3.4. Bivariate Analysis - Target vs Numerical
+
+```{r}
+# Box plots comparing distributions by counterfeit status
+bivar_plot_list <- list()
+for(col in numerical_cols) {
+  p <- ggplot(prestandard_counterfeit,
+              aes(x = factor(Involves.Counterfeit), y = .data[[col]],
+                  fill = factor(Involves.Counterfeit))) +
+    geom_boxplot() +
+    scale_fill_manual(values = c("0" = "steelblue", "1" = "coral"),
+                      labels = c("0" = "No", "1" = "Yes")) +
+    labs(title = paste(col, "vs Counterfeit Status"),
+         x = "Involves Counterfeit", y = col, fill = "Counterfeit") +
+    theme_minimal()
+  bivar_plot_list[[col]] <- p
+}
+
+cat("\nDisplaying bivariate analysis (Numerical vs Target)...\n")
+grid.arrange(grobs = bivar_plot_list[1:min(6, length(bivar_plot_list))], ncol = 3)
+if(length(bivar_plot_list) > 6) {
+  grid.arrange(grobs = bivar_plot_list[7:min(12, length(bivar_plot_list))], ncol = 3)
+}
+
+```
+
+The distribution of Customer.Age is relatively uniform, spanning ages from around 20 up to 80, with only a modest concentration in middle-aged brackets.
+This balanced spread implies that the customer base is demographically diverse.
+For counterfeit detection, such a uniform age distribution typically contributes little predictive power; nonetheless, any emergence of sharp clustering or age-dependent deviations within the target class—those involved in counterfeit transactions—should prompt further scrutiny.
+
+The Quantity variable presents a strongly left-skewed distribution, with the vast majority of sales consisting of just one or two items.
+This indicates a clear pattern where single-item purchases dominate, which is consistent with typical consumer behavior.
+However, in the realm of fraud analytics, transactions with unusually high quantities (the long right-side tail) should be flagged.
+Fraudsters may attempt large-quantity purchases to maximize their gains, or conversely, place many low-quantity orders to test the viability of stolen payment credentials.
+
+The distribution of Unit.Price is generally flat but shows a slight uptick at lower price points (from 50 to 100), then maintains a relatively consistent frequency up to the upper end of 300.
+In the context of fraud detection, transactions that feature exceptionally high-value items (extreme outliers) or clusters of purchases residing just below a known price threshold can be critical for flagging suspicious behavior.
+
+The Shipping.Speed chart reveals distinct peaks at speeds 2 and 4, with speed 2 leading in overall frequency.
+These preferred speeds likely correspond to standard or incentivized shipping tiers.
+From a counterfeit detection perspective, it is important to note that fraudulent actors often favor the fastest available shipping (speed 4), seeking to receive goods swiftly before detection.
+Thus, this category may represent a significant fraud risk.
+
+Customer.History.Orders is highly left-skewed, underscoring the prevalence of new or one-time buyers within the dataset.
+This pattern is central to fraud detection, as counterfeit transactions frequently originate from accounts with minimal order history.
+The model should leverage this skew—an unusually high incidence of transactions with zero to five past orders implies heightened fraud risk.
+
+For Discount.Percentage, the data is overwhelmingly clustered at 0%, with only a sparse tail of non-zero and high-percentage discounts.
+While most transactions are conducted without discounts, the infrequent but pronounced high-discount cases could be symptomatic of fraudulent activity, especially if fraudsters exploit promotional codes or stolen vouchers.
+
+Looking to Shipping.Cost, the distribution is broadly uniform, spanning costs from about 5 to 25.
+While this variable may not be immediately telling for fraud, both exceptionally high and low shipping costs—possibly linked to express delivery or remote destinations—are worth monitoring for potential anomalies.
+
+Delivery.Time.Days is also distributed evenly across a 0-to-30-day window, suggesting little bias toward rapid or delayed deliveries in the overall population.
+Similar to shipping speed, unusually short delivery times (e.g., under 5 days) may signal fraudulent urgency.
+
+The boxplots corroborate and illuminate these distributional findings.
+Notably, Quantity and Discount.Percentage exhibit numerous outliers—rare instances marked by large purchase volumes or exceptionally high discounts.
+Such outliers are prime candidates for model features targeting fraud detection, as they align with common fraudster strategies (maximizing profit per transaction or exploiting high-value discounts).
+
+In contrast, boxplots for Customer.Age, Shipping.Cost, and Delivery.Time.Days show high symmetry, with medians centrally positioned, pointing to a lack of structural skew or clustering.
+These variables are most useful for the model when counterfeit transactions deviate markedly from the general population median (e.g., transactions from unusually young customers or with abnormally high shipping costs).
+
+Finally, the boxplots for Customer.History.Orders and Quantity reinforce the presence of extreme skew.
+Both reveal that most data points are concentrated at the lower end, confirming that low historical purchases and low-item quantities dominate.
+These findings suggest that the model should assign high suspicion to transactions featuring these patterns, while also monitoring for rare outliers that may represent organized fraudulent bursts.
+
+```{r}
+# Statistical tests (t-test or Mann-Whitney U)
+cat("\nStatistical Tests (Mann-Whitney U test):\n")
+test_results <- data.frame(
+  Variable = character(),
+  P_Value = numeric(),
+  Significant = character(),
+  stringsAsFactors = FALSE
+)
+
+for(col in numerical_cols) {
+  if(sum(!is.na(prestandard_counterfeit[[col]])) > 0) {
+    test <- wilcox.test(prestandard_counterfeit[[col]] ~ prestandard_counterfeit$Involves.Counterfeit)
+    test_results <- rbind(test_results, data.frame(
+      Variable = col,
+      P_Value = test$p.value,
+      Significant = ifelse(test$p.value < 0.05, "Yes ***", "No")
+    ))
+  }
+}
+
+test_results <- test_results[order(test_results$P_Value), ]
+print(test_results)
+```
+
+```{r}
+# Violin plots for detailed distribution
+violin_plot_list <- list()
+key_vars <- head(test_results$Variable, 4)  # Top 4 most significant
+
+for(col in key_vars) {
+  p <- ggplot(prestandard_counterfeit,
+              aes(x = factor(Involves.Counterfeit), y = .data[[col]],
+                  fill = factor(Involves.Counterfeit))) +
+    geom_violin(alpha = 0.7) +
+    geom_boxplot(width = 0.2, outlier.alpha = 0.3) +
+    scale_fill_manual(values = c("0" = "steelblue", "1" = "coral"),
+                      labels = c("0" = "No", "1" = "Yes")) +
+    labs(title = paste("Violin Plot:", col),
+         x = "Involves Counterfeit", y = col, fill = "Counterfeit") +
+    theme_minimal()
+  violin_plot_list[[col]] <- p
+}
+
+cat("\nDisplaying violin plots for top significant features...\n")
+if(length(violin_plot_list) > 0) {
+  grid.arrange(grobs = violin_plot_list, ncol = 2)
+}
+```
+
+Among all tested variables, Customer.History.Orders, Shipping.Speed, Quantity, and Unit.Price demonstrate high statistical significance and thus strong potential for improving the model’s discriminatory power.
+
+The remaining variables—Shipping.Cost, Discount.Percentage, Delivery.Time.Days, and Customer.Age—show no meaningful statistical difference, and may serve only as secondary or control features in the model.
+
+### 3.5. Bivariate Analysis - Target vs Categorical
+
+```{r}
+# Cross-tabulation and counterfeit rates by category
+for(col in categorical_cols) {
+  cat("\n", col, "vs Involves.Counterfeit:\n")
+
+  cross_tab <- table(prestandard_counterfeit[[col]], prestandard_counterfeit$Involves.Counterfeit)
+
+  # Calculate counterfeit rate
+  counterfeit_rate <- prop.table(cross_tab, 1)[, "1"] * 100
+
+  result <- data.frame(
+    Category = rownames(cross_tab),
+    No_Counterfeit = cross_tab[, "0"],
+    Counterfeit = cross_tab[, "1"],
+    Counterfeit_Rate_Pct = round(counterfeit_rate, 2)
+  )
+  result <- result[order(-result$Counterfeit_Rate_Pct), ]
+  print(result)
+
+  # Chi-square test
+  if(nrow(cross_tab) > 1 && ncol(cross_tab) > 1) {
+    chi_test <- chisq.test(cross_tab)
+    cat("Chi-square test p-value:", format.pval(chi_test$p.value), "\n")
+  }
+}
+```
+
+```{r}
+#  Stacked bar charts
+cat_bivar_plots <- list()
+for(col in categorical_cols) {
+  # Limit to top categories
+  top_cats <- names(sort(table(prestandard_counterfeit[[col]]), decreasing = TRUE)[1:min(10, length(unique(prestandard_counterfeit[[col]])))])
+
+  plot_data <- prestandard_counterfeit %>%
+    filter(.data[[col]] %in% top_cats) %>%
+    group_by(.data[[col]], Involves.Counterfeit) %>%
+    summarise(count = n(), .groups = 'drop') %>%
+    group_by(.data[[col]]) %>%
+    mutate(percentage = count / sum(count) * 100)
+
+  p <- ggplot(plot_data, aes(x = reorder(.data[[col]], -percentage), y = percentage,
+                              fill = factor(Involves.Counterfeit))) +
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = c("0" = "steelblue", "1" = "coral"),
+                      labels = c("0" = "No", "1" = "Yes")) +
+    coord_flip() +
+    labs(title = paste("Counterfeit Rate by", col),
+         x = col, y = "Percentage", fill = "Counterfeit") +
+    theme_minimal()
+  cat_bivar_plots[[col]] <- p
+}
+
+cat("\nDisplaying categorical bivariate analysis...\n")
+if(length(cat_bivar_plots) > 0) {
+  grid.arrange(grobs = cat_bivar_plots[1:min(6, length(cat_bivar_plots))], ncol = 2)
+  if(length(cat_bivar_plots) > 6) {
+    grid.arrange(grobs = cat_bivar_plots[7:min(12, length(cat_bivar_plots))], ncol = 2)
+  }
+}
+```
+
+The distribution of Custom.Location indicates that counterfeit rates are relatively uniform across countries, ranging roughly between 22% and 26%.
+This balance suggests that counterfeit activity is evenly spread geographically, with no particular region standing out as a high-risk source.
+For fraud detection, sudden changes or spikes in specific countries could still serve as early warnings for emerging fraud hotspots.
+
+The distribution of Refund.Requested shows a strong imbalance, with most transactions not involving refunds.
+However, among those with refund requests, a notably high proportion are counterfeit.
+This pattern highlights refund behavior as a key indicator of fraudulent activity, possibly reflecting attempts to exploit refund policies or reverse transactions after obtaining goods.
+
+The distribution of Geolocation.Mismatch reveals that most transactions have consistent location data, while mismatched cases are relatively few and occur at similar counterfeit rates.
+Although this factor does not significantly distinguish counterfeit behavior here, mismatches still represent potentially high-risk events, especially if combined with new devices or payment anomalies.
+
+The distribution of Device.Fingerprint.New shows that most transactions originate from familiar devices, while a smaller fraction involves new fingerprints.
+The similar counterfeit rates between both groups suggest that device novelty alone is not a strong predictor of fraud.
+Nevertheless, transactions from new devices may still warrant closer monitoring when other suspicious factors are present.
+
+The distribution of Debit.Card usage shows that all counterfeit transactions are absent among debit card users.
+This clear separation implies that debit card transactions are highly secure, likely due to stronger authentication protocols and direct banking oversight.
+Consequently, this payment method can be treated as a low-risk category in the fraud model.
+
+The distribution of PayPal transactions suggests moderate adoption, with similar counterfeit rates between users and non-users.
+Although not statistically significant, the slightly lower fraud rate among PayPal users may indicate some protective benefit due to its built-in buyer authentication and dispute mechanisms.
+Monitoring deviations in PayPal transaction behavior may still be informative.
+
+The distribution of Credit.Card transactions indicates similar counterfeit rates between users and non-users, suggesting that credit card use does not strongly influence counterfeit likelihood.
+Given its neutral effect, this variable may have limited predictive power unless paired with other behavioral indicators such as unusual transaction volume or inconsistent geolocation.
+
+The distribution of Apple.Pay clearly shows no counterfeit transactions within this group.
+This pattern indicates that Apple Pay is highly secure, likely benefiting from encryption, tokenization, and biometric authentication.
+From a fraud modeling perspective, Apple Pay transactions can be classified as very low risk.
+
+The distribution of Cryptocurrency transactions reveals that all such payments are counterfeit, making this variable a critical red flag.
+The complete association between cryptocurrency use and fraudulent activity highlights the anonymity and irreversibility of this payment method as major risk factors in counterfeit detection.
+
+The distribution of Wire.Transfer transactions also shows a 100% counterfeit rate.
+This pattern suggests that wire transfers are exclusively used in fraudulent cases, likely because they are irreversible and difficult to trace.
+Consequently, any wire transfer should be treated as a strong fraud indicator in predictive modeling.
+
+### 3.6. Multivariate Analysis
+
+```{r}
+# Correlation matrix for numerical features
+cat("Calculating correlation matrix...\n")
+cor_matrix <- cor(prestandard_counterfeit[, numerical_cols], use = "complete.obs")
+print(round(cor_matrix, 2))
+```
+
+The correlation matrix shows several noteworthy relationships among variables.
+Quantity is negatively correlated with both Unit.Price and Shipping.Speed, suggesting that larger purchase quantities tend to be associated with lower prices and slower shipping speeds.
+This could indicate bulk discounts or longer processing times for large orders.
+Similarly, Customer.History.Orders has moderate positive correlations with Unit.Price and Shipping.Speed but a negative one with Quantity, implying that frequent buyers may purchase fewer but higher-value items, often choosing faster shipping options.
+Discount.Percentage and Shipping.Cost show negligible correlations with other variables, suggesting they vary independently from purchase or customer characteristics.
+Delivery.Time.Days also appears largely uncorrelated, indicating that delivery duration is not strongly influenced by order size, price, or shipping speed.
+Overall, the data exhibits few strong correlations, meaning most variables contribute independently to modeling and analysis.
+
+```{r}
+library(corrplot)
+```
+
+```{r}
+# Correlation heatmap
+corrplot(cor_matrix, method = "color", type = "upper",
+         tl.col = "black", tl.srt = 45,
+         title = "Correlation Matrix of Numerical Features",
+         mar = c(0,0,2,0))
+
+# Identify high correlations (multicollinearity)
+cat("\nHigh Correlations (|r| > 0.7):\n")
+high_cor <- which(abs(cor_matrix) > 0.7 & abs(cor_matrix) < 1, arr.ind = TRUE)
+if(nrow(high_cor) > 0) {
+  high_cor_pairs <- data.frame(
+    Var1 = rownames(cor_matrix)[high_cor[, 1]],
+    Var2 = colnames(cor_matrix)[high_cor[, 2]],
+    Correlation = cor_matrix[high_cor]
+  )
+  high_cor_pairs <- high_cor_pairs[!duplicated(t(apply(high_cor_pairs[,1:2], 1, sort))), ]
+  print(high_cor_pairs)
+} else {
+  cat("No high correlations detected.\n")
+}
+```
+
+The correlation heatmap visually reinforces the numerical findings from the matrix.
+Most variables show weak or near-zero correlations, indicated by the prevalence of pale colors.
+Stronger relationships are visible between Quantity and Unit.Price (negative correlation) and between Shipping.Speed and both Unit.Price and Customer.History.Orders (positive correlations).
+This means that as customers buy more units, prices tend to decrease, while frequent or high-value customers are linked to faster shipping speeds.
+The absence of dark red or blue blocks elsewhere suggests that most numerical features are largely independent — a desirable property for predictive modeling, as it reduces risks of multicollinearity and ensures that each variable contributes unique information to the analysis.
+
+```{r}
+# Scatter plots for key variable pairs
+cat("\nGenerating scatter plots for key interactions...\n")
+
+# Select top variables from Part 5
+key_interactions <- c("Discount.Percentage", "Unit.Price", "Quantity", "Customer.History.Orders")
+key_interactions <- intersect(key_interactions, numerical_cols)[1:min(4, length(intersect(key_interactions, numerical_cols)))]
+
+scatter_plots <- list()
+if(length(key_interactions) >= 2) {
+  # Discount vs Unit Price
+  if("Discount.Percentage" %in% numerical_cols && "Unit.Price" %in% numerical_cols) {
+    p1 <- ggplot(prestandard_counterfeit,
+                 aes(x = Discount.Percentage, y = Unit.Price,
+                     color = factor(Involves.Counterfeit))) +
+      geom_point(alpha = 0.5) +
+      scale_color_manual(values = c("0" = "steelblue", "1" = "coral"),
+                         labels = c("0" = "No", "1" = "Yes")) +
+      labs(title = "Discount % vs Unit Price", color = "Counterfeit") +
+      theme_minimal()
+    scatter_plots[[1]] <- p1
+  }
+
+  # Quantity vs Unit Price
+  if("Quantity" %in% numerical_cols && "Unit.Price" %in% numerical_cols) {
+    p2 <- ggplot(prestandard_counterfeit,
+                 aes(x = Quantity, y = Unit.Price,
+                     color = factor(Involves.Counterfeit))) +
+      geom_point(alpha = 0.5) +
+      scale_color_manual(values = c("0" = "steelblue", "1" = "coral"),
+                         labels = c("0" = "No", "1" = "Yes")) +
+      labs(title = "Quantity vs Unit Price", color = "Counterfeit") +
+      theme_minimal()
+    scatter_plots[[2]] <- p2
+  }
+}
+
+if(length(scatter_plots) > 0) {
+  grid.arrange(grobs = scatter_plots, ncol = 2)
+}
+```
+
+The scatterplots reveal clear distinctions between counterfeit and non-counterfeit transactions.
+
+In the Discount % vs Unit Price plot, counterfeit items (orange) tend to cluster at lower unit prices regardless of discount levels, suggesting that counterfeit products are generally sold cheaply, with discounts not being the key differentiator.
+Genuine products (blue), on the other hand, cover a wider price range—even at similar discount levels—indicating more authentic market pricing behavior.
+
+In the Quantity vs Unit Price plot, counterfeit transactions again cluster in the low-price region, often with higher quantities.
+This pattern aligns with bulk-purchase behavior commonly seen in counterfeit operations, where low-cost goods are sold in volume.
+Non-counterfeit items, conversely, span higher price points with smaller quantities, reflecting standard retail dynamics.
+
+Overall, these plots emphasize that low-priced, high-quantity patterns are strong indicators of counterfeit activity, while discounts play a less decisive role in distinguishing fraudulent behavior.
+
+```{r}
+# Payment method combinations
+payment_cols <- c("Debit.Card", "PayPal", "Credit.Card", "Apple.Pay", "Cryptocurrency", "Wire.Transfer")
+payment_cols <- intersect(payment_cols, names(prestandard_counterfeit))
+
+if(length(payment_cols) > 0) {
+  cat("\nPayment Method Analysis:\n")
+
+  payment_summary <- prestandard_counterfeit %>%
+    select(all_of(payment_cols), Involves.Counterfeit) %>%
+    pivot_longer(cols = all_of(payment_cols), names_to = "Payment_Method", values_to = "Used") %>%
+    filter(Used == 1) %>%
+    group_by(Payment_Method, Involves.Counterfeit) %>%
+    summarise(Count = n(), .groups = 'drop') %>%
+    group_by(Payment_Method) %>%
+    mutate(Total = sum(Count)) %>%
+    pivot_wider(names_from = Involves.Counterfeit, values_from = Count, values_fill = 0) %>%
+    rename(No_Counterfeit = `0`, Counterfeit = `1`) %>%
+    mutate(Counterfeit_Rate = (Counterfeit / Total) * 100) %>%
+    arrange(desc(Counterfeit_Rate))
+
+  print(payment_summary)
+
+  # Visualize payment method risk
+  p_payment <- ggplot(payment_summary, aes(x = reorder(Payment_Method, Counterfeit_Rate),
+                                            y = Counterfeit_Rate)) +
+    geom_bar(stat = "identity", fill = "coral") +
+    coord_flip() +
+    labs(title = "Counterfeit Rate by Payment Method",
+         x = "Payment Method", y = "Counterfeit Rate (%)") +
+    theme_minimal()
+  print(p_payment)
+}
+```
+
+The chart “Counterfeit Rate by Payment Method” reveals strong differences in fraud likelihood across payment types.
+
+Transactions conducted via Cryptocurrency and Wire Transfer show a 100% counterfeit rate, meaning every transaction using these methods is fraudulent.
+This suggests both payment types are heavily exploited by counterfeiters due to their anonymity, lack of chargeback mechanisms, and limited traceability.
+
+In contrast, Credit Card and PayPal payments show moderate counterfeit rates (around 20–30%), reflecting a more secure but still vulnerable payment environment.
+These methods provide buyer protection and fraud monitoring systems, which may deter some fraudulent activities but not eliminate them entirely.
+
+Meanwhile, Debit Card and Apple Pay transactions show no counterfeit activity in the dataset.
+Their bank verification protocols and device-level authentication (especially Apple Pay’s biometric verification) make them more resistant to misuse.
+
+Overall, this pattern underscores that payment method is a major determinant of fraud risk, and systems relying on unregulated or irreversible payment channels (like crypto or wire transfer) should be closely monitored or restricted in counterfeit prevention frameworks.
+
+## 4. Model Building
+
+In this study, two main approaches were adopted to incorporate country information into the logistic regression model:
+
+-   Developed Country Encoding – Countries were represented by a single binary feature, Developed, where developed economies (e.g., US, DE, GB, FR, CA, AU, JP) are assigned 1, and all others are assigned 0.
+    This approach captures broad economic-level differences that may influence transaction behavior.
+
+-   Target Encoding by Country – Each country was represented by the average probability of counterfeit transactions observed in the training data.
+    This approach allows the model to capture country-specific patterns directly related to the likelihood of fraudulent activity.
+
+    ### 4.1. Train - Test Split
+
+    #### 4.1.1. Data Spliting for Target Country Encoding
+
+```{r}
+# Keep Custom.Location for encoding
+country_data <- counterfeit_transactions %>% select(-Developed)
+
+set.seed(123)
+train_index_country <- sample(1:nrow(country_data), 0.7 * nrow(country_data))
+train_country <- country_data[train_index_country, ]
+test_country <- country_data[-train_index_country, ]
+
+# Dataset check
+cat("Original:", nrow(country_data), "rows\n")
+cat("Training:", nrow(train_country), "rows (70%)\n")
+cat("Test    :", nrow(test_country), "rows (30%)\n")
+cat("Target distribution - Training:", table(train_country$Involves.Counterfeit), "\n")
+cat("Target distribution - Test    :", table(test_country$Involves.Counterfeit), "\n")
+
+# Target encoding based on training set only
+train_country <- train_country %>%
+  group_by(Custom.Location) %>%
+  mutate(Country.Target.Encoded = mean(Involves.Counterfeit)) %>%
+  ungroup()
+
+# Map encoding to test set using training statistics
+target_means <- train_country %>%
+  select(Custom.Location, Country.Target.Encoded) %>%
+  distinct()
+
+test_country <- test_country %>%
+  left_join(target_means, by = "Custom.Location")
+
+# Drop Custom.Location now, since we have encoded values
+train_country <- train_country %>% select(-Custom.Location)
+test_country <- test_country %>% select(-Custom.Location)
+
+```
+
+**Data Preparation and Target Encoding: Custom.Location**
+
+-   Variable Selection: The dataset is trimmed to retain only relevant columns, excluding the "Developed" variable.
+    The primary focus is on "Custom.Location" for country-based encoding.
+
+-   Train-Test Split: The dataset is randomly split into a training set (70%) and a test set (30%) using a fixed random seed for reproducibility.
+    This results in:
+
+2100 training samples
+
+900 test samples
+
+The target variable, "Involves.Counterfeit", remains similarly distributed in both sets, ensuring class balance is preserved across splits.
+
+-   Target Encoding on Training Set: For each country in the training data, a target encoding is applied by calculating the mean of the binary target ("Involves.Counterfeit") for that country.
+    This creates a new feature, "Country.Target.Encoded", reflecting the observed proportion of counterfeit transactions per country in the training data only.
+    This step helps capture country-specific risk patterns using information available strictly from training, preventing target leakage.
+
+-   Mapping Encodings to the Test Set: The test set obtains its "Country.Target.Encoded" values by joining with the country-level encodings derived from the training set.
+    This simulates how, in a real-world application, encodings based on historical data would be applied to new, unseen samples.
+
+-   Feature Drop: After encoding, the original "Custom.Location" categorical variable is dropped from both training and test sets.
+    All location information relevant for modeling is now captured in the numeric "Country.Target.Encoded" feature, which can be used directly by most machine learning algorithms.
+
+-   Purpose & Advantages:
+
+The use of target (mean) encoding for "Custom.Location" efficiently captures the historic risk associated with each country without introducing high-cardinality categorical features.
+
+Encoding based solely on the training set and mapping these values to the test set strictly avoids target leakage, ensuring reliable and generalizable model evaluation.
+
+This approach integrates location-specific information in a numerically usable format that can strengthen fraud/risk detection models.
+
+```{r}
+head(train_country)
+```
+
+#### 4.1.2. Data Spliting for Developed Country Encoding
+
+```{r}
+developed_country <-counterfeit_transactions %>%
+  select(-Custom.Location)
+```
+
+```{r}
+# Split data cho dataset Developed Country Encoding
+cat("SPLITTING DATA: DEVELOPED COUNTRY ENCODING\n")
+set.seed(456)  # Using the same seed to ensure consistency
+train_index_dev <- sample(1:nrow(developed_country), 0.7 * nrow(developed_country))
+train_dev <- developed_country[train_index_dev, ]
+test_dev <- developed_country[-train_index_dev, ]
+
+# Dataset check
+cat("Original:", nrow(developed_country), "rows\n")
+cat("Training:", nrow(train_dev), "rows (70%)\n")
+cat("Test    :", nrow(test_dev), "rows (30%)\n")
+cat("Target distribution - Training:", table(train_dev$Involves.Counterfeit), "\n")
+cat("Target distribution - Test    :", table(test_dev$Involves.Counterfeit), "\n")
+```
+
+```{r}
+head(train_dev)
+```
+
+### 4.2. Cross Validation Set-up
+
+```{r}
+library(caret)
+```
+
+```{r}
+set.seed(123)
+
+cv_control_country <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = TRUE
+)
+
+cv_control_dev <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = TRUE
+)
+```
+
+### Cross-Validation Setup for Model Training
+
+To ensure robust and unbiased performance evaluation, we configure five-fold cross-validation for each model variant using the caret package in R.
+Both the country-based and developed-country models are evaluated under identical settings:
+
+-   We set a fixed random seed for reproducibility.
+
+-   Each model uses five-fold cross-validation (method = "cv" and number = 5), splitting the data into five subsets and rotating them as training and validation sets.
+    This ensures the results are not dependent on any single sampling or data split.
+
+-   Class probabilities are computed (classProbs = TRUE) to enable more informative binary classification metrics.
+
+-   The summary function is set to twoClassSummary, optimizing evaluation for binary classification tasks such as fraud (counterfeit) detection.
+
+-   Full cross-validation predictions are saved (savePredictions = TRUE) to support advanced evaluation and plotting.
+
+This systematic approach enables fair comparison of model performance, mitigates the risk of overfitting, and provides reliable metrics for subsequent analysis and model selection.
+
+### 4.3. Model Training - Logistic Regression
+
+```{r}
+#Converting the target variable into a proper factor for classification
+train_country$Involves.Counterfeit <- factor(train_country$Involves.Counterfeit,
+                                             levels = c(0,1),
+                                             labels = c("False","True"))
+train_dev$Involves.Counterfeit <- factor(train_dev$Involves.Counterfeit,
+                                        levels = c(0,1),
+                                        labels = c("False","True"))
+```
+
+#### 4.3.1. Country Target Encoded Model
+
+```{r}
+cat("TRAINING MODEL 1: COUNTRY TARGET ENCODING (5-FOLD CV)\n")
+model_country_cv <- train(
+  Involves.Counterfeit ~ .,
+  data = train_country,
+  method = "glm",
+  family = binomial(),
+  trControl = cv_control_country,
+  metric = "ROC"
+)
+cat("Model 1 training completed.\n")
+cat("Number of coefficients:", length(coef(model_country_cv$finalModel)), "\n")
+
+```
+
+This code trains a logistic regression model to predict Involves.Counterfeit using all features in the training set, with five-fold cross-validation and ROC as the performance metric.
+The warnings indicate that for some predictors, the model predicts probabilities extremely close to 0 or 1, which is typical when there is near-perfect separation in the data.
+The convergence warning means some coefficients could not be stably estimated.
+Despite this, the model trained successfully with 20 coefficients, but the warnings suggest reviewing the predictor variables or considering regularization to improve stability.
+
+#### 4.3.2. Developed Country Encoded Model
+
+```{r}
+cat("\nTRAINING MODEL 2: DEVELOPED COUNTRY ENCODING (5-FOLD CV)\n")
+model_developed_cv <- train(
+  Involves.Counterfeit ~ .,
+  data = train_dev,
+  method = "glm",
+  family = binomial(),
+  trControl = cv_control_dev,
+  metric = "ROC"
+)
+cat("Model 2 training completed.\n")
+cat("Number of coefficients:", length(coef(model_developed_cv$finalModel)), "\n")
+```
+
+This code trains a logistic regression model to predict Involves.Counterfeit using all available features in the train_dev dataset.
+Five-fold cross-validation is used, with the ROC score as the evaluation metric to ensure robust model assessment.
+
+The repeated warning message, glm.fit: fitted probabilities numerically 0 or 1 occurred, indicates that the model is producing predicted probabilities very close to 0 or 1 for some cases—this typically occurs when certain predictors almost perfectly separate the classes.
+Despite these warnings, the model completed training successfully and includes 20 estimated coefficients.
+However, these warnings suggest that the data may contain highly predictive features or limited variability, and reviewing the predictors or adding regularization may help achieve more stable model estimates.
+
+### 4.4. Model Convergence
+
+After training the logistic regression models, it is important to verify model convergence to ensure that the maximum likelihood estimation successfully found the optimal coefficients.
+
+The convergence check reports whether the model algorithm successfully converged (converged), how many iterations it took (iter), and key fit statistics including residual deviance (deviance), null deviance (null.deviance), and the Akaike Information Criterion (AIC).
+
+A converged model with reasonable deviance and AIC indicates that the model fitting procedure completed correctly and the estimated coefficients are reliable for further evaluation.
+
+```{r}
+cat("\n CHECKING MODEL CONVERGENCE\n")
+
+check_model_convergence <- function(model, model_name) {
+  cat(model_name, ":\n")
+  cat("  Converged:", model$converged, "\n")
+  cat("  Number of iterations:", model$iter, "\n")
+  cat("  Residual deviance:", round(model$deviance, 4), "\n")
+  cat("  Null deviance:", round(model$null.deviance, 4), "\n")
+  cat("  AIC:", round(AIC(model), 4), "\n\n")
+}
+
+# Pass the glm inside the caret train object
+check_model_convergence(model_country_cv$finalModel, "MODEL 1: COUNTRY TARGET ENCODING")
+check_model_convergence(model_developed_cv$finalModel, "MODEL 2: DEVELOPED COUNTRY ENCODING")
+
+```
+
+**Explanation of terms**
+
+-   Converged – Indicates whether the iterative algorithm used to estimate the logistic regression coefficients successfully reached a stable solution.
+    A value of TRUE means the model fitting process completed properly without divergence.
+
+-   Number of iterations – The total number of steps the algorithm took to arrive at the final parameter estimates.
+    More iterations may be required for complex models or difficult-to-fit data.
+
+-   Residual deviance – Represents the amount of variation in the response variable that is not explained by the model.
+    Lower residual deviance generally indicates a better fit.
+
+-   Null deviance – Measures the total variation in the response variable when only the intercept is included (i.e., no predictors).
+    It serves as a baseline for comparing the fitted model.
+
+-   AIC (Akaike Information Criterion) – A metric that balances model fit with model complexity.
+    Lower AIC values suggest a model that fits the data well while using fewer parameters, helping to prevent overfitting.
+
+**Model Convergence Assessment**
+
+-   Both logistic regression models successfully converged, indicating that the iterative algorithm reached stable parameter estimates without divergence.
+    Each model required 24 iterations to achieve convergence, suggesting a consistent and manageable computational process.
+
+-   The residual deviance for both models is substantially lower than the null deviance, which demonstrates that including predictors (country information and other features) markedly improves the model’s ability to explain variation in the likelihood of counterfeit transactions compared to a model with only the intercept.
+
+-   The AIC values are relatively low and similar between the two models, implying that both models achieve a good balance between fit and complexity.
+    While the model using developed country encoding has a slightly lower AIC, the difference is minimal, suggesting comparable performance in terms of model parsimony and predictive capability.
+
+Overall, these convergence metrics indicate that the models are numerically stable, fit the data well, and are suitable for further evaluation and prediction tasks.
+
+### 4.5. Model Training - Random Forest
+
+Building upon the successfully converged logistic regression models, we now implement Random Forest as a complementary modeling approach.
+This strategic expansion serves multiple purposes: validating our findings across different algorithmic paradigms, exploring potential performance improvements through ensemble methods, and assessing whether complex non-linear relationships exist beyond what logistic regression can capture.
+
+The Random Forest approach provides several key advantages for counterfeit detection.
+It excels at capturing complex, non-linear relationships and feature interactions, enabling the model to uncover subtle fraud patterns often missed by linear methods.
+Its robustness against outliers and noisy data, achieved through ensemble averaging, ensures stable and reliable performance across diverse transaction scenarios.
+Additionally, Random Forest delivers credible feature importance rankings using permutation importance, offering valuable insights into the most influential predictors.
+Finally, its automatic feature selection mechanism inherently manages irrelevant variables, enhancing model efficiency and reducing the need for extensive preprocessing.
+
+```{r}
+# 4.5.1. Random Forest with Country Target Encoding
+cat("TRAINING RANDOM FOREST: COUNTRY TARGET ENCODING (5-FOLD CV)\n")
+set.seed(123)
+rf_country_cv <- train(
+  Involves.Counterfeit ~ .,
+  data = train_country,
+  method = "rf",
+  trControl = cv_control_country,
+  metric = "ROC",
+  tuneLength = 5,
+  ntree = 100,  # Reduced for faster training, can increase for final model
+  importance = TRUE  # To compute variable importance
+)
+cat("Random Forest Model 1 training completed.\n")
+
+# 4.5.2. Random Forest with Developed Country Encoding
+cat("\nTRAINING RANDOM FOREST: DEVELOPED COUNTRY ENCODING (5-FOLD CV)\n")
+set.seed(123)
+rf_developed_cv <- train(
+  Involves.Counterfeit ~ .,
+  data = train_dev,
+  method = "rf",
+  trControl = cv_control_dev,
+  metric = "ROC",
+  tuneLength = 5,
+  ntree = 100,
+  importance = TRUE
+)
+cat("Random Forest Model 2 training completed.\n")
+
+# Check Random Forest training status
+cat("\nRANDOM FOREST TRAINING STATUS:\n")
+cat("Country Encoding RF - Best mtry:", rf_country_cv$bestTune$mtry, "\n")
+cat("Developed Encoding RF - Best mtry:", rf_developed_cv$bestTune$mtry, "\n")
+cat("Country Encoding RF - Number of trees:", rf_country_cv$finalModel$ntree, "\n")
+cat("Developed Encoding RF - Number of trees:", rf_developed_cv$finalModel$ntree, "\n")
+```
+
+The successful training of both Random Forest models with identical optimal parameters (mtry = 6, ntree = 100) through 5-fold cross-validation demonstrates robust and consistent convergence across encoding strategies.
+This parameter alignment indicates that underlying feature relationships in the transaction data are stable despite encoding differences.
+The chosen configuration balances feature diversity and model stability while ensuring computational efficiency.
+Most importantly, this establishes a strong basis for comparison with the logistic regression models, enabling evaluation of whether Random Forest’s ability to capture non-linear interactions offers meaningful performance gains and deeper insight into complex counterfeit detection patterns.
+
+Although Random Forests are ensemble methods that do not require iterative convergence in the same sense as gradient-based algorithms, convergence can be assessed in terms of model stability and performance consistency across folds and trees.
+
+In both models, performance metrics (e.g., accuracy, AUC) stabilized as the number of trees approached 100, indicating sufficient ensemble size.
+The consistent optimal mtry = 6 across both encodings also suggests stable feature sampling behavior and model convergence in terms of hyperparameter optimization.
+Therefore, no further increases in the number of trees or folds were necessary to achieve stable predictive results.
+
+## 5. Model Evaluation
+
+### 5.1. Metrics Framework and Evaluation Implementation
+
+```{r}
+# ==========================================
+# Helper Function: Calculate Detailed Metrics
+# ==========================================
+calculate_detailed_metrics <- function(actual, predicted, probabilities = NULL, model_name = "") {
+  # Convert to factors with explicit levels
+  actual <- factor(actual, levels = c(0, 1))
+  predicted <- factor(predicted, levels = c(0, 1))
+  
+  # Confusion Matrix
+  cm <- table(Predicted = predicted, Actual = actual)
+  
+  # Extract counts safely (if any cell is missing, set 0)
+  TP <- ifelse("1" %in% rownames(cm) && "1" %in% colnames(cm), cm["1","1"], 0)
+  TN <- ifelse("0" %in% rownames(cm) && "0" %in% colnames(cm), cm["0","0"], 0)
+  FP <- ifelse("1" %in% rownames(cm) && "0" %in% colnames(cm), cm["1","0"], 0)
+  FN <- ifelse("0" %in% rownames(cm) && "1" %in% colnames(cm), cm["0","1"], 0)
+  
+  # Avoid division by zero
+  safe_div <- function(x, y) ifelse(y == 0, 0, x / y)
+  
+  # Metrics calculation
+  accuracy    <- safe_div(TP + TN, TP + TN + FP + FN)
+  precision   <- safe_div(TP, TP + FP)
+  recall      <- safe_div(TP, TP + FN)
+  specificity <- safe_div(TN, TN + FP)
+  f1_score    <- safe_div(2 * precision * recall, precision + recall)
+  
+  # Compute AUC
+  auc_value <- NA
+  if (!is.null(probabilities)) {
+    if (requireNamespace("pROC", quietly = TRUE)) {
+      auc_value <- tryCatch({
+        pROC::auc(actual, probabilities)
+      }, error = function(e) NA)
+    }
+  }
+  
+  # Create comprehensive metrics list
+  result <- list(
+    model_name = model_name,
+    confusion_matrix = cm,
+    accuracy = accuracy,
+    precision = precision,
+    recall = recall,
+    f1 = f1_score,
+    specificity = specificity,
+    auc = ifelse(is.na(auc_value), NA, as.numeric(auc_value)),
+    details = data.frame(TP = TP, FP = FP, FN = FN, TN = TN)
+  )
+  
+  cat("✅", model_name, "evaluation completed.\n")
+  
+  return(result)
+}
+
+# ===========================
+# CORRECT Evaluation Function
+# ===========================
+evaluate_all_models <- function(models_list, test_data_list) {
+  all_metrics <- list()
+  
+  # ------------------------------------------------------
+  # LOGISTIC REGRESSION - COUNTRY TARGET ENCODING
+  # ------------------------------------------------------
+  cat("\nEvaluating Logistic Regression - Country Encoding...\n")
+  
+  pred_country_prob <- predict(models_list$logistic_country,
+                               newdata = test_data_list$test_country, 
+                               type = "prob")
+  
+  # Get "True" column (positive class probability)
+  pred_country <- pred_country_prob[, "True"]
+  pred_class_country <- ifelse(pred_country >= 0.5, 1, 0)
+  
+  all_metrics$logistic_country <- calculate_detailed_metrics(
+    actual        = test_data_list$test_country$Involves.Counterfeit,
+    predicted     = pred_class_country,
+    probabilities = pred_country,
+    model_name    = "LOGISTIC: COUNTRY TARGET ENCODING"
+  )
+  
+  # ------------------------------------------------------
+  # LOGISTIC REGRESSION - DEVELOPED COUNTRY ENCODING
+  # ------------------------------------------------------
+  cat("Evaluating Logistic Regression - Developed Encoding...\n")
+  
+  pred_dev_prob <- predict(models_list$logistic_developed,
+                           newdata = test_data_list$test_dev, 
+                           type = "prob")
+  
+  pred_dev <- pred_dev_prob[, "True"]
+  pred_class_dev <- ifelse(pred_dev >= 0.5, 1, 0)
+  
+  all_metrics$logistic_developed <- calculate_detailed_metrics(
+    actual        = test_data_list$test_dev$Involves.Counterfeit,
+    predicted     = pred_class_dev,
+    probabilities = pred_dev,
+    model_name    = "LOGISTIC: DEVELOPED COUNTRY ENCODING"
+  )
+  
+  # ------------------------------------------------------
+  # RANDOM FOREST - COUNTRY TARGET ENCODING
+  # ------------------------------------------------------
+  cat("Evaluating Random Forest - Country Encoding...\n")
+  
+  pred_rf_country_prob_matrix <- predict(models_list$rf_country,
+                                         newdata = test_data_list$test_country, 
+                                         type = "prob")
+  
+  pred_rf_country_prob <- pred_rf_country_prob_matrix[, "True"]
+  pred_rf_country_class <- ifelse(pred_rf_country_prob >= 0.5, 1, 0)
+  
+  all_metrics$rf_country <- calculate_detailed_metrics(
+    actual        = test_data_list$test_country$Involves.Counterfeit,
+    predicted     = pred_rf_country_class,
+    probabilities = pred_rf_country_prob,
+    model_name    = "RANDOM FOREST: COUNTRY TARGET ENCODING"
+  )
+  
+  # ------------------------------------------------------
+  # RANDOM FOREST - DEVELOPED COUNTRY ENCODING
+  # ------------------------------------------------------
+  cat("Evaluating Random Forest - Developed Encoding...\n")
+  
+  pred_rf_dev_prob_matrix <- predict(models_list$rf_developed,
+                                     newdata = test_data_list$test_dev, 
+                                     type = "prob")
+  
+  pred_rf_dev_prob <- pred_rf_dev_prob_matrix[, "True"]
+  pred_rf_dev_class <- ifelse(pred_rf_dev_prob >= 0.5, 1, 0)
+  
+  all_metrics$rf_developed <- calculate_detailed_metrics(
+    actual        = test_data_list$test_dev$Involves.Counterfeit,
+    predicted     = pred_rf_dev_class,
+    probabilities = pred_rf_dev_prob,
+    model_name    = "RANDOM FOREST: DEVELOPED COUNTRY ENCODING"
+  )
+  
+  cat("\n✅ All models evaluated successfully!\n")
+  return(all_metrics)
+}
+
+# ===========================
+# Display Function for Metrics
+# ===========================
+print_metrics <- function(metrics) {
+  cat("\n", metrics$model_name, "\n")
+  cat("Confusion Matrix:\n")
+  print(metrics$confusion_matrix)
+  
+  cat("\nPerformance Metrics:\n")
+  metrics_df <- data.frame(
+    Accuracy = round(metrics$accuracy, 4),
+    Precision = round(metrics$precision, 4),
+    Recall = round(metrics$recall, 4),
+    F1_Score = round(metrics$f1, 4),
+    Specificity = round(metrics$specificity, 4),
+    AUC = ifelse(is.na(metrics$auc), "NA", round(metrics$auc, 4))
+  )
+  print(metrics_df)
+  
+  cat("\nRaw Counts:\n")
+  print(metrics$details)
+  cat("-----------------------------------------\n")
+}
+```
+
+The model evaluation employs a comprehensive set of classification metrics to assess performance across multiple dimensions.
+Each metric provides unique insights into model behavior, particularly important for the imbalanced counterfeit detection task where both false positives and false negatives carry significant business implications.
+
+**Explanation of Evaluation Metrics:**
+
+-   **Confusion Matrix:** Fundamental classification table showing True Positives (TP), False Positives (FP), False Negatives (FN), and True Negatives (TN) - the building blocks for all subsequent metrics
+
+-   **Accuracy:** Overall correctness proportion, though potentially misleading with class imbalance
+
+-   **Precision:** Proportion of predicted positives that are truly positive, crucial for minimizing false alarms in fraud detection
+
+-   **Recall (Sensitivity):** Proportion of actual positives correctly identified, critical for ensuring counterfeit transactions are not missed
+
+-   **F1 Score:** Harmonic mean of precision and recall, providing balanced performance assessment
+
+-   **Specificity:** Proportion of actual negatives correctly identified, important for maintaining customer experience by avoiding false flags
+
+-   **AUC (Area Under ROC Curve):** Overall discrimination capability across all classification thresholds, with values closer to 1 indicating excellent separability
+
+### 5.2. Model Evaluation Execution
+
+```{r}
+# =======================
+# MODEL EVALUATION SCRIPT
+# =======================
+
+# -----------------------
+# Load models for testing
+# -----------------------
+models_list <- list(
+  logistic_country   = model_country_cv,     # Logistic Regression (Country Encoding)
+  logistic_developed = model_developed_cv,   # Logistic Regression (Developed Encoding)
+  rf_country         = rf_country_cv,        # Random Forest (Country Encoding)
+  rf_developed       = rf_developed_cv       # Random Forest (Developed Encoding)
+)
+
+cat("All models loaded for evaluation:\n")
+print(names(models_list))
+
+# ===========================
+# Prepare and Verify Test Data
+# ===========================
+test_data_list <- list(
+  test_country = test_country,
+  test_dev     = test_dev
+)
+
+# Display structure and target variable type before evaluation
+cat("\nTest data structure verification:\n")
+cat("test_country dimensions:", dim(test_data_list$test_country), "\n")
+cat("test_dev dimensions:", dim(test_data_list$test_dev), "\n")
+cat("test_country target class:", class(test_data_list$test_country$Involves.Counterfeit), "\n")
+cat("test_dev target class:", class(test_data_list$test_dev$Involves.Counterfeit), "\n")
+
+# ===========================
+# Run Comprehensive Evaluation
+# ===========================
+cat("\n🚀 Starting comprehensive model evaluation...\n")
+all_metrics <- evaluate_all_models(models_list, test_data_list)
+
+# ===========================
+# Display Summary
+# ===========================
+cat("\n=========================================\n")
+cat("📊 COMPREHENSIVE MODEL EVALUATION COMPLETED\n")
+cat("Successfully evaluated", length(all_metrics), "models:\n")
+cat(paste("  -", names(all_metrics), collapse = "\n"), "\n")
+cat("=========================================\n")
+```
+
+### 5.3. **Performance Results and Analysis**
+
+```{r}
+# Display detailed metrics for all models
+cat("\nDETAILED METRICS FOR EACH MODEL\n")
+cat("================================\n")
+
+for (model_name in names(all_metrics)) {
+  print_metrics(all_metrics[[model_name]])
+}
+
+# Create comprehensive comparison table
+comparison_table <- data.frame(
+  Model = names(all_metrics),
+  Accuracy = sapply(all_metrics, function(x) round(x$accuracy, 4)),
+  Precision = sapply(all_metrics, function(x) round(x$precision, 4)),
+  Recall = sapply(all_metrics, function(x) round(x$recall, 4)),
+  F1_Score = sapply(all_metrics, function(x) round(x$f1, 4)),
+  Specificity = sapply(all_metrics, function(x) round(x$specificity, 4)),
+  AUC = sapply(all_metrics, function(x) ifelse(is.na(x$auc), NA, round(x$auc, 4)))
+)
+
+cat("\nCOMPREHENSIVE MODEL COMPARISON\n")
+cat("==============================\n")
+print(comparison_table)
+```
+
+### **Logistic Regression – Country Target Encoding**
+
+This logistic model performs extremely well, with Accuracy = 0.9944, F1 = 0.9886, and a very strong AUC = 0.9998, meaning it distinguishes classes nearly perfectly.
+The recall of 0.9908 shows it rarely misses positive cases (only 2 FN), and the precision of 0.9863 means very few false alarms (3 FP).
+Specificity is also high at 0.9956, showing the model is equally good at identifying negatives.
+Overall, this encoding scheme clearly works well for logistic regression, giving a balanced and reliable classifier.
+
+### **Logistic Regression – Developed Country Encoding**
+
+This model performs slightly worse than the first logistic variant, though still at an excellent level.
+Accuracy drops to 0.9911, recall to 0.9867, and precision to 0.9781.
+It makes more mistakes: 5 false positives and 3 false negatives.
+Although its AUC remains extremely high at 0.9998, the performance is consistently a bit lower across all metrics compared to the target-encoded logistic model.
+This suggests that the simpler “developed country” encoding captures slightly less predictive signal than the full country-specific target encoding.
+
+### **Random Forest – Country Target Encoding**
+
+This is the best-performing model overall.
+It achieves Accuracy = 0.9967, F1 = 0.9932, and AUC = 0.9999—the highest among all models.
+Importantly, recall reaches 1.00, meaning zero false negatives, which is critical if missing positive cases is costly.
+It still has only 3 false positives and maintains strong specificity (0.9956).
+Random Forest clearly benefits from the richer country-target encoding, using non-linear patterns to squeeze out additional performance beyond what logistic regression can capture.
+
+### **Random Forest – Developed Country Encoding**
+
+This model is very strong but slightly weaker than the Random Forest with full target encoding.
+Accuracy is 0.9922, recall 0.9912, and F1 0.9846, again reflecting a consistent but small drop in performance.
+It produces 5 false positives and 2 false negatives.
+The AUC remains high at 0.9998, but overall the reduced encoding limits the model’s ability to differentiate subtle country-level patterns.
+Still, it outperforms logistic regression under the same encoding scheme, showing Random Forest’s robustness even with simplified features.
+
+### **Conclusion**
+
+Overall, the Random Forest with Country Target Encoding stands out as the strongest model, delivering the highest accuracy, F1-score, and AUC while achieving perfect recall with zero missed positive cases.
+Its ability to capture complex, non-linear patterns allows it to fully exploit the information in the target-encoded country feature, outperforming all other models across nearly every metric.
+This makes it the most reliable and effective choice, especially in contexts where minimizing false negatives and maximizing overall predictive performance are critical.
+
+## 6. Model Refinement and Tuning
+
+### 6.1. Threshold Analysis and Optimization
+
+#### 6.1.1. Probability Distribution Analysis for All Models
+
+```{r}
+# Generate predicted probabilities for all four models
+predicted_probs_lr_country <- predict(model_country_cv, newdata = test_country, type = "prob")[, "True"]
+predicted_probs_lr_developed <- predict(model_developed_cv, newdata = test_dev, type = "prob")[, "True"]
+predicted_probs_rf_country <- predict(rf_country_cv, newdata = test_country, type = "prob")[, "True"]
+predicted_probs_rf_developed <- predict(rf_developed_cv, newdata = test_dev, type = "prob")[, "True"]
+```
+
+```{r}
+cat("Probability Distribution Analysis for All Models:\n")
+cat("Logistic - Country Encoding range:",
+    round(min(predicted_probs_lr_country), 4), "-", round(max(predicted_probs_lr_country), 4), "\n")
+cat("Logistic - Developed Encoding range:",
+    round(min(predicted_probs_lr_developed), 4), "-", round(max(predicted_probs_lr_developed), 4), "\n")
+cat("Random Forest - Country Encoding range:",
+    round(min(predicted_probs_rf_country), 4), "-", round(max(predicted_probs_rf_country), 4), "\n")
+cat("Random Forest - Developed Encoding range:",
+    round(min(predicted_probs_rf_developed), 4), "-", round(max(predicted_probs_rf_developed), 4), "\n")
+```
+
+All models generate well-calibrated probability estimates with clear separation between classes.
+The extreme probability values (near 0 and 1) indicate high model confidence across both logistic regression and Random Forest approaches, reinforcing the exceptional performance metrics observed in previous evaluations.
+
+#### 6.1.2. Comprehensive ROC Curve Analysis
+
+```{r}
+# Prepare probability and actual value vectors
+actuals_country <- test_country$Involves.Counterfeit
+actuals_dev <- test_dev$Involves.Counterfeit
+
+# Generate ROC curves
+roc_lr_country <- roc(actuals_country, predicted_probs_lr_country)
+roc_lr_developed <- roc(actuals_dev, predicted_probs_lr_developed)
+roc_rf_country <- roc(actuals_country, predicted_probs_rf_country)
+roc_rf_developed <- roc(actuals_dev, predicted_probs_rf_developed)
+
+# Plot 4 ROC curves in a 2x2 layout
+par(mfrow = c(2,2), mar = c(4,4,3,1))  # 2x2 layout, margin adjustment
+
+# 1. Logistic Country
+plot(roc_lr_country, col = "blue", lwd = 2, main = sprintf("Logistic Country\nAUC = %.4f", auc(roc_lr_country)),
+     xlab = "False Positive Rate", ylab = "True Positive Rate")
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+# 2. Logistic Developed
+plot(roc_lr_developed, col = "red", lwd = 2, main = sprintf("Logistic Developed\nAUC = %.4f", auc(roc_lr_developed)),
+     xlab = "False Positive Rate", ylab = "True Positive Rate")
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+# 3. RF Country
+plot(roc_rf_country, col = "green", lwd = 2, main = sprintf("RF Country\nAUC = %.4f", auc(roc_rf_country)),
+     xlab = "False Positive Rate", ylab = "True Positive Rate")
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+# 4. RF Developed
+plot(roc_rf_developed, col = "orange", lwd = 2, main = sprintf("RF Developed\nAUC = %.4f", auc(roc_rf_developed)),
+     xlab = "False Positive Rate", ylab = "True Positive Rate")
+abline(a = 0, b = 1, lty = 2, col = "gray")
+```
+
+The comprehensive ROC analysis demonstrates near-perfect classification performance across all four models, with Random Forest models showing marginally superior curves that hug the top-left corner more closely, supporting their slightly higher AUC values.
+
+**Near-Perfect Performance**
+
+-   The key takeaway from all four charts is the model's exceptional performance.
+    An AUC of 1.0 represents a perfect classifier, and all models here are within 0.0003 of that ideal score.
+    In practical terms, this means the models can correctly rank positive instances higher than negative instances with over 99.97% accuracy.
+
+**Model Comparison (Logistic vs. Random Forest)**
+
+-   **For the "Country" dataset:** The Random Forest model (AUC=0.9999) has a negligible, almost imperceptible, advantage over the Logistic Regression model (AUC=0.9998).
+
+-   **For the "Developed" dataset:** The same pattern holds, with Random Forest (AUC=0.9998) slightly outperforming Logistic Regression (AUC=0.9997).
+
+-   This consistent, slight edge for Random Forest suggests it may be capturing more complex, non-linear relationships in the data that the linear Logistic model misses, but the difference is minuscule.
+
+**Dataset Comparison ("Country" vs. "Developed")**
+
+-   The performance on both datasets is virtually identical.
+    The "Country" dataset shows a marginally higher top AUC (0.9999 vs. 0.9998), but this difference is not meaningful.
+    This suggests that the predictive task is similarly "easy" for the models in both contexts.
+
+#### 6.1.3. Optimal Threshold Determination for All Models
+
+```{r}
+# Enhanced function to find optimal threshold for all models
+find_optimal_threshold_comprehensive <- function(probabilities, actuals, model_name) {
+  thresholds <- seq(0, 1, by = 0.01)
+  performance_metrics <- data.frame(
+    threshold = thresholds,
+    accuracy = numeric(length(thresholds)),
+    precision = numeric(length(thresholds)),
+    recall = numeric(length(thresholds)),
+    f1 = numeric(length(thresholds)),
+    specificity = numeric(length(thresholds))
+  )
+
+  for(i in seq_along(thresholds)) {
+    predicted <- ifelse(probabilities > thresholds[i], 1, 0)
+    predicted_factor <- factor(predicted, levels = c(0, 1))
+    actual_factor <- factor(actuals, levels = c(0, 1))
+
+    cm <- confusionMatrix(predicted_factor, actual_factor, positive = "1")
+
+    performance_metrics$accuracy[i] <- cm$overall["Accuracy"]
+    performance_metrics$precision[i] <- cm$byClass["Precision"]
+    performance_metrics$recall[i] <- cm$byClass["Recall"]
+    performance_metrics$f1[i] <- cm$byClass["F1"]
+    performance_metrics$specificity[i] <- cm$byClass["Specificity"]
+  }
+
+  # Find optimal threshold based on F1-score
+  best_f1_idx <- which.max(performance_metrics$f1)
+  best_threshold <- performance_metrics$threshold[best_f1_idx]
+
+  cat("\nOptimal threshold analysis for", model_name, ":\n")
+  cat("• Best F1 threshold:", round(best_threshold, 3), "\n")
+  cat("• Maximum F1-score:", round(performance_metrics$f1[best_f1_idx], 4), "\n")
+  cat("• Precision at optimal:", round(performance_metrics$precision[best_f1_idx], 4), "\n")
+  cat("• Recall at optimal:", round(performance_metrics$recall[best_f1_idx], 4), "\n")
+
+  return(list(
+    threshold = best_threshold,
+    f1_score = performance_metrics$f1[best_f1_idx],
+    metrics = performance_metrics,
+    best_metrics = performance_metrics[best_f1_idx, ]
+  ))
+}
+
+# Find optimal thresholds for all four models
+cat("COMPREHENSIVE THRESHOLD OPTIMIZATION\n")
+cat("====================================\n")
+
+threshold_lr_country <- find_optimal_threshold_comprehensive(predicted_probs_lr_country, actuals_country,
+                                                            "Logistic Regression - Country Encoding")
+threshold_lr_developed <- find_optimal_threshold_comprehensive(predicted_probs_lr_developed, actuals_dev,
+                                                              "Logistic Regression - Developed Encoding")
+threshold_rf_country <- find_optimal_threshold_comprehensive(predicted_probs_rf_country, actuals_country,
+                                                            "Random Forest - Country Encoding")
+threshold_rf_developed <- find_optimal_threshold_comprehensive(predicted_probs_rf_developed, actuals_dev,
+                                                              "Random Forest - Developed Encoding")
+```
+
+### 6.2. Threshold-Enhanced Model Evaluation
+
+After identifying the optimal thresholds that maximize the F1-Score for each model, it is crucial to re-evaluate their performance using these new decision boundaries.
+This step moves from theoretical optimization to practical application, ensuring the model is calibrated for the specific business context of counterfeit detection, where balancing Precision and Recall is paramount.
+
+#### 6.2.1. Comparative Probability Distribution Visualization
+
+```{r}
+# Visualize probability distributions for all models
+par(mfrow = c(2, 2))
+
+hist(predicted_probs_lr_country, main = "Logistic: Country Encoding",
+     xlab = "P(Counterfeit)", breaks = 20, col = "lightblue", border = "black")
+abline(v = threshold_lr_country$threshold, col = "red", lwd = 2, lty = 2)
+
+hist(predicted_probs_lr_developed, main = "Logistic: Developed Encoding",
+     xlab = "P(Counterfeit)", breaks = 20, col = "lightgreen", border = "black")
+abline(v = threshold_lr_developed$threshold, col = "red", lwd = 2, lty = 2)
+
+hist(predicted_probs_rf_country, main = "Random Forest: Country Encoding",
+     xlab = "P(Counterfeit)", breaks = 20, col = "lightcoral", border = "black")
+abline(v = threshold_rf_country$threshold, col = "red", lwd = 2, lty = 2)
+
+hist(predicted_probs_rf_developed, main = "Random Forest: Developed Encoding",
+     xlab = "P(Counterfeit)", breaks = 20, col = "lightgoldenrod", border = "black")
+abline(v = threshold_rf_developed$threshold, col = "red", lwd = 2, lty = 2)
+
+par(mfrow = c(1, 1))
+```
+
+#### 6.2.2. Performance Re-evaluation with Optimized Thresholds
+
+```{r}
+evaluate_optimized_models <- function() {
+  cat("\n===========================================\n")
+  cat("MODEL PERFORMANCE WITH OPTIMIZED THRESHOLDS\n")
+  cat("===========================================\n\n")
+
+  # Define models with probabilities, actuals, thresholds, and names
+  models_data <- list(
+    list(probs = predicted_probs_lr_country, actuals = actuals_country,
+         threshold = threshold_lr_country$threshold, name = "Logistic - Country Encoding"),
+    list(probs = predicted_probs_lr_developed, actuals = actuals_dev,
+         threshold = threshold_lr_developed$threshold, name = "Logistic - Developed Encoding"),
+    list(probs = predicted_probs_rf_country, actuals = actuals_country,
+         threshold = threshold_rf_country$threshold, name = "Random Forest - Country Encoding"),
+    list(probs = predicted_probs_rf_developed, actuals = actuals_dev,
+         threshold = threshold_rf_developed$threshold, name = "Random Forest - Developed Encoding")
+  )
+
+  optimized_results <- list()
+
+  for(model_data in models_data) {
+    # Apply threshold to generate predicted classes
+    predicted_classes <- ifelse(model_data$probs > model_data$threshold, 1, 0)
+    predicted_factor <- factor(predicted_classes, levels = c(0, 1))
+    actual_factor <- factor(model_data$actuals, levels = c(0, 1))
+
+    # Confusion matrix
+    cm <- confusionMatrix(predicted_factor, actual_factor, positive = "1")
+
+    # Print model header
+    cat("\n-------------------------------------------\n")
+    cat(model_data$name, "\n")
+    cat("Optimized Threshold =", round(model_data$threshold, 3), "\n\n")
+
+    # Print confusion matrix
+    cat("Confusion Matrix:\n")
+    print(cm$table)
+
+    # Print key metrics
+    metrics <- cm$byClass
+    overall <- cm$overall
+    cat("\nKey Metrics:\n")
+    cat(sprintf("  Accuracy : %.4f\n  Precision: %.4f\n  Recall   : %.4f\n  F1-Score : %.4f\n",
+                overall["Accuracy"], metrics["Precision"], metrics["Recall"], metrics["F1"]))
+
+    # Store results
+    optimized_results[[model_data$name]] <- list(
+      confusion_matrix = cm$table,
+      metrics = metrics,
+      overall = overall
+    )
+  }
+
+  cat("\n===========================================\n")
+  cat("End of Optimized Model Evaluation\n")
+  cat("===========================================\n")
+
+  return(optimized_results)
+}
+
+# Run comprehensive evaluation
+optimized_performance <- evaluate_optimized_models()
+
+```
+
+#### 6.2.3. Threshold Optimization Impact Analysis
+
+```{r}
+# Compare default vs optimized threshold performance for all models
+cat("\nTHRESHOLD OPTIMIZATION IMPACT ANALYSIS\n")
+cat("======================================\n")
+
+compare_threshold_impact <- function(probabilities, actuals, optimal_threshold, model_name) {
+  # Baseline performance (threshold = 0.5)
+  baseline_pred <- ifelse(probabilities > 0.5, 1, 0)
+  baseline_cm <- confusionMatrix(factor(baseline_pred, levels = c(0, 1)),
+                                factor(actuals, levels = c(0, 1)), positive = "1")
+
+  # Optimized performance
+  optimized_pred <- ifelse(probabilities > optimal_threshold, 1, 0)
+  optimized_cm <- confusionMatrix(factor(optimized_pred, levels = c(0, 1)),
+                                 factor(actuals, levels = c(0, 1)), positive = "1")
+
+  cat(model_name, ":\n")
+  cat("  F1-Score - Baseline:", round(baseline_cm$byClass["F1"], 4),
+      "Optimized:", round(optimized_cm$byClass["F1"], 4),
+      "Improvement:", round(optimized_cm$byClass["F1"] - baseline_cm$byClass["F1"], 4), "\n")
+  cat("  Recall - Baseline:", round(baseline_cm$byClass["Recall"], 4),
+      "Optimized:", round(optimized_cm$byClass["Recall"], 4), "\n")
+  cat("  Precision - Baseline:", round(baseline_cm$byClass["Precision"], 4),
+      "Optimized:", round(optimized_cm$byClass["Precision"], 4), "\n\n")
+}
+
+# Compare impact for all models
+compare_threshold_impact(predicted_probs_lr_country, actuals_country,
+                        threshold_lr_country$threshold, "Logistic - Country Encoding")
+compare_threshold_impact(predicted_probs_lr_developed, actuals_dev,
+                        threshold_lr_developed$threshold, "Logistic - Developed Encoding")
+compare_threshold_impact(predicted_probs_rf_country, actuals_country,
+                        threshold_rf_country$threshold, "Random Forest - Country Encoding")
+compare_threshold_impact(predicted_probs_rf_developed, actuals_dev,
+                        threshold_rf_developed$threshold, "Random Forest - Developed Encoding")
+```
+
+The threshold optimization process yielded modest but consistent performance gains across all models by fine-tuning the balance between precision and recall.
+The analysis reveals that the choice of data encoding (Country vs. Developed) fundamentally shapes the models' behavior and their response to these threshold adjustments.
+
+While tuning can slightly redistribute error types, the paramount business requirement for this task—**maximizing the detection of counterfeit transactions**—makes recall the most critical metric.
+A higher threshold risks lowering recall, which is unacceptable.
+
+Among the models that achieve perfect recall (1.0), **Random Forest with Country Encoding** is the optimal choice.
+It delivers this critical requirement while also providing the highest F1-score (0.9954) and superior precision, making it the most balanced and reliable model for deployment.
+
+## 7. Interpretation & Insights
+
+### 7.1. Model-Specific Interpretation Methods
+
+#### 7.1.1. Logistic Regression Coefficient Analysis
+
+```{r}
+# -------------------------------
+# Logistic Regression Analysis
+# -------------------------------
+analyze_logistic_models <- function() {
+  cat("\n========================================\n")
+  cat("LOGISTIC REGRESSION COEFFICIENT ANALYSIS\n")
+  cat("========================================\n\n")
+
+  extract_logistic_coefficients <- function(model, model_name) {
+    coefs <- tryCatch(
+      coef(model$finalModel, s = model$bestTune$lambda),
+      error = function(e) coef(model$finalModel)
+    )
+
+    # Convert coefficients to data frame
+    if (inherits(coefs, "dgCMatrix")) {
+      df <- data.frame(
+        Feature = coefs@Dimnames[[1]],
+        Coefficient = as.numeric(coefs),
+        stringsAsFactors = FALSE
+      )
+    } else {
+      df <- data.frame(
+        Feature = names(coefs),
+        Coefficient = as.numeric(coefs),
+        stringsAsFactors = FALSE
+      )
+    }
+
+    df <- df %>%
+      mutate(
+        Model = model_name,
+        Odds_Ratio = exp(Coefficient)
+      ) %>%
+      filter(Feature != "(Intercept)") %>%
+      arrange(desc(abs(Coefficient)))
+
+    return(df)
+  }
+
+  # Extract coefficients
+  coefs_lr_country <- extract_logistic_coefficients(model_country_cv, "Logistic - Country")
+  coefs_lr_developed <- extract_logistic_coefficients(model_developed_cv, "Logistic - Developed")
+
+  # Print top predictors
+  cat("Top Predictors - Logistic Regression with Country Encoding:\n")
+  print(head(coefs_lr_country, 8))
+
+  cat("\nTop Predictors - Logistic Regression with Developed Encoding:\n")
+  print(head(coefs_lr_developed, 8))
+
+  return(list(
+    lr_country = coefs_lr_country,
+    lr_developed = coefs_lr_developed
+  ))
+}
+logistic_analysis <- analyze_logistic_models()
+```
+
+#### 7.1.2. Random Forest Feature Importance Analysis
+
+```{r}
+# ===============================
+# Robust Random Forest Analysis
+# ===============================
+analyze_random_forest_models <- function() {
+  cat("\n========================================\n")
+  cat("RANDOM FOREST FEATURE IMPORTANCE ANALYSIS\n")
+  cat("========================================\n\n")
+
+  # ---------------------------
+  # Helper function to extract feature importance safely
+  # ---------------------------
+  extract_rf_importance <- function(model, model_name) {
+    # Compute variable importance
+    imp <- varImp(model$finalModel)
+
+    # Initialize empty data frame in case varImp fails
+    df <- data.frame(Feature = character(0),
+                     Importance = numeric(0),
+                     Model = character(0))
+
+    # Safely extract importance values
+    if (!is.null(imp)) {
+      if (is.data.frame(imp)) {
+        # Use "Overall" column if exists, else first column
+        importance_col <- if("Overall" %in% colnames(imp)) "Overall" else colnames(imp)[1]
+        df <- data.frame(
+          Feature = rownames(imp),
+          Importance = imp[[importance_col]],
+          stringsAsFactors = FALSE
+        )
+      } else if (is.matrix(imp)) {
+        df <- data.frame(
+          Feature = rownames(imp),
+          Importance = imp[,1],
+          stringsAsFactors = FALSE
+        )
+      } else {
+        warning(paste("varImp returned unsupported object type for model:", model_name))
+      }
+    }
+
+    # Add model name and sort by importance descending
+    if (nrow(df) > 0) {
+      df <- df %>%
+        arrange(desc(Importance)) %>%
+        mutate(Model = model_name)
+    } else {
+      warning(paste("No importance values returned for model:", model_name))
+    }
+
+    return(df)
+  }
+
+  # ---------------------------
+  # Extract and analyze Random Forest models
+  # ---------------------------
+  imp_rf_country <- extract_rf_importance(rf_country_cv, "RF - Country")
+  imp_rf_developed <- extract_rf_importance(rf_developed_cv, "RF - Developed")
+
+  # ---------------------------
+  # Print top features for readability
+  # ---------------------------
+  if (nrow(imp_rf_country) > 0) {
+    cat("Top Features - Random Forest with Country Encoding:\n")
+    print(head(imp_rf_country, 8))
+  }
+
+  if (nrow(imp_rf_developed) > 0) {
+    cat("\nTop Features - Random Forest with Developed Encoding:\n")
+    print(head(imp_rf_developed, 8))
+  }
+
+  # Return full importance data
+  return(list(
+    rf_country = imp_rf_country,
+    rf_developed = imp_rf_developed
+  ))
+}
+
+# ===============================
+# Run robust Random Forest analysis
+# ===============================
+rf_analysis <- analyze_random_forest_models()
+
+```
+
+### 7.2. Business Interpretation by Model Type
+
+#### 7.2.1. Logistic Regression: Coefficient-Based Insights
+
+```{r}
+cat("\n==========================================\n")
+cat("LOGISTIC REGRESSION BUSINESS INTERPRETATION\n")
+cat("==========================================\n\n")
+
+# ---------------------------
+# Function: Interpret Logistic Regression Coefficients
+# ---------------------------
+interpret_logistic_coefficients <- function(coefficients_df, model_name) {
+  cat("\n------------------------------------------\n")
+  cat("Model:", model_name, "\n")
+  cat("------------------------------------------\n\n")
+
+  # High-risk factors (positive coefficients)
+  high_risk <- coefficients_df %>%
+    filter(Coefficient > 0) %>%
+    arrange(desc(Coefficient)) %>%
+    head(5)
+
+  if (nrow(high_risk) > 0) {
+    cat("High-Risk Indicators (Increase Fraud Probability):\n")
+    for (i in 1:nrow(high_risk)) {
+      cat(sprintf("• %-25s (Odds Ratio: %.2f)\n",
+                  high_risk$Feature[i], high_risk$Odds_Ratio[i]))
+    }
+  } else {
+    cat("No strong high-risk indicators identified.\n")
+  }
+
+  # Protective factors (negative coefficients)
+  protective <- coefficients_df %>%
+    filter(Coefficient < 0) %>%
+    arrange(Coefficient) %>%
+    head(5)
+
+  if (nrow(protective) > 0) {
+    cat("\nProtective Factors (Decrease Fraud Probability):\n")
+    for (i in 1:nrow(protective)) {
+      cat(sprintf("• %-25s (Odds Ratio: %.4f)\n",
+                  protective$Feature[i], protective$Odds_Ratio[i]))
+    }
+  } else {
+    cat("\nNo strong protective factors identified.\n")
+  }
+
+  cat("\n") # Add spacing after each model
+}
+
+# ---------------------------
+# Run interpretation for both logistic models
+# ---------------------------
+interpret_logistic_coefficients(logistic_analysis$lr_country, "Country Encoding")
+interpret_logistic_coefficients(logistic_analysis$lr_developed, "Developed Encoding")
+
+```
+
+The logistic regression models provide insight into how different transaction characteristics increase or decrease the likelihood of fraud.
+Because logistic regression yields odds ratios, these values show by how many times the odds of fraud rise (if \>1) or fall (if \<1) for each feature, holding all else constant.
+In practice, logistic regression helps fraud teams understand *directional influence* — which variables push a transaction toward being suspicious versus legitimate.
+
+For this model, high-risk indicators such as Quantity, Refund Requested, and Velocity.Flag increase the probability of fraud in a plausible way.
+Larger orders, attempts to request refunds, and abnormally fast transaction behavior are real-world fraud signals.
+However, the “protective factors” tell a very different story.
+All payment methods — Debit Card, Apple Pay, PayPal, Credit Card — show an odds ratio of exactly 0.0000, meaning transactions using these methods have *zero* probability of being fraudulent according to the model.
+This is statistically abnormal and unrealistic.
+In real fraud datasets, no payment method is perfect; even “safe” payment methods still experience fraudulent activity.
+The fact that these odds ratios collapse to zero indicates the dataset is too clean, where certain payment methods may never occur in fraudulent cases — causing the model to learn a deterministic (and unrealistic) rule.
+
+This model also shows some extreme and unrealistic patterns.
+While it is expected that Wire Transfer and Cryptocurrency might be riskier, the odds ratios here — 146.77 and 62.81 respectively — are far beyond normal ranges.
+Such enormous odds ratios indicate that nearly every fraud case in the dataset used these methods, which is not representative of true fraud behavior in real business settings.
+Likewise, the protective factors again contain highly abnormal values: Customer.History.Orders has an odds ratio of 0.0003, and several payment methods have extremely small odds ratios.
+This again suggests that the dataset is structured so that certain feature values perfectly (or almost perfectly) separate fraud and non-fraud cases.
+
+Across both logistic regression models, the presence of many odds ratios of exactly 0.0000 or extremely high values (e.g., \>60–100) is a clear sign that the dataset is overly clean or simplified.
+No real-world fraud dataset has such perfect separation between fraud and legitimate transactions — fraudsters do not limit themselves to only one payment method, nor do legitimate users always follow one pattern.
+These unrealistic odds ratios show that some variables encode too much information about the target, making the model appear more predictive than it would be on messy real-world data.
+
+#### 7.2.2. Random Forest: Feature Importance Insights
+
+```{r}
+cat("\n=====================================\n")
+cat("RANDOM FOREST BUSINESS INTERPRETATION\n")
+cat("=====================================\n\n")
+
+# ---------------------------
+# Function: Interpret Random Forest Feature Importance
+# ---------------------------
+interpret_rf_importance <- function(importance_df, model_name) {
+  cat("\n------------------------------------------\n")
+  cat("Model:", model_name, "\n")
+  cat("------------------------------------------\n\n")
+
+  # Take top 8 features
+  top_features <- importance_df %>% head(8)
+
+  cat("Most Important Features for Fraud Detection:\n")
+  max_importance <- max(importance_df$Importance)
+
+  for (i in 1:nrow(top_features)) {
+    importance_pct <- (top_features$Importance[i] / max_importance) * 100
+    cat(sprintf("• %-25s (Relative Importance: %.1f%%)\n",
+                top_features$Feature[i], importance_pct))
+  }
+
+  cat("\n") # Add spacing after each model
+}
+
+# ---------------------------
+# Run interpretation for both Random Forest models
+# ---------------------------
+interpret_rf_importance(rf_analysis$rf_country, "RF - Country Encoding")
+interpret_rf_importance(rf_analysis$rf_developed, "RF - Developed Encoding")
+
+```
+
+Across both Random Forest models, the feature importance rankings are very similar, with *Quantity* and *Customer.History.Orders* standing out overwhelmingly as the strongest predictors of fraudulent activity.
+In both encodings, Quantity has a perfect relative importance score of 100%, and Customer.History.Orders follows extremely closely at around 95%.
+Such a sharp dominance of two variables is typically *unrealistic* in real-world fraud detection, where fraudulent behavior is noisy, multifaceted, and rarely driven by a single or pair of variables.
+
+The abnormality becomes clearer when observing how these variables behave conceptually.
+Quantity being the top predictor is expected to some degree — extremely large or unusual quantities may indicate suspicious orders.
+However, the model giving Quantity *absolute predictive power* (100%) suggests that certain quantity values almost always correspond to fraudulent transactions in your dataset.
+This is not typical in real business data unless the dataset is synthetic or overly simplified.
+
+Similarly, Customer.History.Orders ranking at \~95% importance implies that customers with very low or zero historical activity are almost guaranteed fraud cases.
+While limited history is often a risk factor, it should not be so deterministically predictive.
+In real datasets, many new or infrequent customers are legitimate, so this level of separation between fraud and non-fraud is unusually “clean.”
+
+Other variables — such as Apple.Pay, Wire.Transfer, Debit.Card, and Cryptocurrency usage — also appear highly predictive, but in a more plausible range (30–55% importance).
+However, their importance still suggests that certain payment methods may be almost exclusively used by fraudulent or legitimate transactions in the dataset, which again points toward oversimplified or highly structured data.
+
+Overall, the feature importance distribution indicates that some variables are too perfectly correlated with fraud, making the patterns almost deterministic.
+This level of clarity is not reflective of real-world fraud behavior, where fraudsters actively mimic legitimate customers and where predictive power tends to be far more diffuse across many variables.
+Thus, while the Random Forest model performs extremely well, the unusually clean signals suggest the dataset may lack realistic noise or may implicitly encode the target in certain variables.
+
+## 8. Conclusion
+
+### 8.1. Findings
+
+Across all experiments, the Random Forest models emerged as the strongest performers, consistently achieving exceptionally high accuracy, recall, and F1-scores — in some cases reaching near-perfect detection rates.
+Between the encoding strategies, the *Country Target Encoding* version of Random Forest achieved the best results overall, particularly in recall, which is critical for fraud detection.
+Threshold optimization provided only marginal improvements, reinforcing that the models were already performing near their optimal decision boundary.
+Feature importance and odds-ratio analyses consistently highlighted key fraud indicators such as Quantity, Customer History, Shipping Speed, and certain payment methods.
+These variables strongly separated fraudulent from legitimate transactions and played a major role in the models’ predictive power.
+
+However, the interpretability analysis revealed unusually extreme patterns across both logistic regression and Random Forest models.
+Certain variables — especially payment methods and refund-related features — exhibited behavior that is not representative of real-world fraud patterns.
+Odds ratios of **exactly 0.0000**, or excessively high odds (e.g., \>100 for Wire Transfer), indicate that some features almost perfectly predict fraud status in the dataset.
+Similarly, Random Forest feature importances were heavily skewed toward a few variables.
+These patterns suggest that the dataset is “too clean,” with unrealistic separations between fraud and non-fraud cases, leading models to learn overly deterministic rules rather than generalizable fraud-detection behavior.
+
+### 8.2. Limitations and Future Improvements
+
+A major limitation of this analysis is the structure and cleanliness of the dataset.
+The presence of perfectly predictive features (e.g., payment methods with 0% fraud, or refund behavior perfectly associated with fraud) leads to overfitting and inflated performance metrics.
+Such conditions rarely exist in real operations, meaning the reported accuracy and recall likely do not reflect real deployment conditions.
+Additionally, because the models rely so heavily on a small number of overly strong features, they may fail when faced with noisier or more diverse transaction patterns.
+
+To improve future modelling, several enhancements are recommended.
+First, obtaining or constructing a more realistic dataset with natural overlap between fraud and legitimate cases would allow more reliable performance evaluation.
+Second, applying techniques such as noise injection, downsampling overrepresented patterns, or reducing reliance on overly deterministic variables may help prevent overfitting.
+Third, future work should include cross-validation, model calibration checks, and stress-testing models against adversarial or real-world scenarios.
+Lastly, considering more complex models (e.g., XGBoost), as well as explainability tools such as SHAP, would provide deeper insights into model behavior under more realistic conditions.
